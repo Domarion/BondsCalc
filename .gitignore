@@ -1,0 +1,16 @@
+.dub
+docs.json
+__dummy.html
+docs/
+/bond-calc
+bond-calc.so
+bond-calc.dylib
+bond-calc.dll
+bond-calc.a
+bond-calc.lib
+bond-calc-test-*
+*.exe
+*.o
+*.obj
+*.lst
+.vscode/

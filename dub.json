@@ -1,0 +1,13 @@
+{
+	"authors": [
+		"Domarion"
+	],
+	"copyright": "Copyright © 2021, Domarion",
+	"dependencies": {
+		"hunt": "~>1.7.8",
+		"hunt-http": "~>0.7.6"
+	},
+	"description": "Получение данных об облигациях с Moex",
+	"license": "proprietary",
+	"name": "bond-calc"
+}
