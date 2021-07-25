@@ -1,8 +1,10 @@
 module moexdata;
 
-public import std.datetime;
+import std.datetime;
+import std.math;
+import std.json;
 
-struct Bond
+struct BondExt
 {
 // Описание полей здесь: https://iss.moex.com/iss/engines/stock/markets/bonds/
     string SECID; // Идентификатор финансового инструмента
@@ -36,13 +38,14 @@ struct Bond
     Date OFFERDATE = Date.min; // Дата Оферты
     Date SETTLEDATE = Date.min; // Дата расчётов сделки(особо не интересна)
     double LOTVALUE = 0.0; // Номинальная стоимость лота, в валюте номинала
-}
 
-struct BondExtension
-{
-    Bond TheBond;
-    double YieldToMaturity = 0.0;
+    // Небиржевые поля:
+    @("% Общая простая доходность") double CommonSimpleYieldToMaturity = 0.0; // Общая простая доходность к дате погашения облигации
+    @("% Годовая простая доходность") double SimpleYieldToMaturityPerYear = 0.0; // Годовая простая доходность к дате погашения облигации
     bool HasAmortization = false;
+    // Cм. SecurityDesc
+    bool ISQUALIFIEDINVESTORS = false;
+    bool EARLYREPAYMENT = false;
 }
 
 struct AmortCursor
@@ -54,27 +57,34 @@ struct AmortCursor
 
 struct AmortData
 {
- // Пока не учитываю амортизацию - интересно только её наличие
     string isin;
     string name;
 //     double issuevalue = 0.0;
-//     string amortdate;
-//     double facevalue = 0.0;
-//     double initialfacevalue = 0.0;
-    string faceunit;
+    Date amortdate; // дата амортизации (зависит от from и till)
+    double facevalue = 0.0; // Актуальный размер номинала
+    double initialfacevalue = 0.0; // Изначальный размер номинала
+    // string faceunit;
 //     double valueprc= 0.0;
 //     double value= 0.0;
-//     double value_rub= 0.0;
+    double value_rub = 0.0; // размер амортизации (зависит от from и till)
     string data_source;
 }
 
-bool IsRub(string aCurrency)
+struct SecurityDesc
+{
+    string SECID;
+    string ISIN;
+    bool ISQUALIFIEDINVESTORS = false; // Бумаги для квалифицированных инвесторов
+    bool EARLYREPAYMENT = false; // Возможен досрочный выкуп
+}
+
+bool IsRub(const string aCurrency)
 {
     return aCurrency == "RUB"
         || aCurrency == "SUR";
 }
 
-bool IsAllowedBoard(string aBoard)
+bool IsAllowedBoard(const string aBoard)
 {
     // TQCB Т+ Облигации
     // TQOB Т+ Гособлигации
@@ -82,8 +92,63 @@ bool IsAllowedBoard(string aBoard)
     return aBoard == "TQCB" || aBoard == "TQOB";
 }
 
-bool HasAmortizationData(string aDataSource)
+bool HasAmortizationData(const string aDataSource)
 {
     return aDataSource == "amortization";
+}
+
+bool IsValidPrice(const double aPrice)
+{
+    return !isNaN(aPrice) && aPrice != 0.0;
+}
+
+/// Получение актуальной цены облигации
+/// Решил, что сначала нужно брать VWAP цену. Если её нет брать максимальную из предыдущей цены и номинала, иначе брать номинал.
+double GetBondActualPrice(const BondExt aBond)
+{
+    if (IsValidPrice(aBond.PREVWAPRICE))
+    {
+        const double prevVwapPriceAbsolute = quantize!ceil(aBond.FACEVALUE * aBond.PREVWAPRICE / 100, aBond.MINSTEP);
+
+        return prevVwapPriceAbsolute;
+    }
+
+    if (IsValidPrice(aBond.PREVPRICE))
+    {
+        // Предыдущая цена задаётся в процентах от номинала, поэтому делю на 100
+        const double prevPriceAbsolute = quantize!ceil(aBond.FACEVALUE * aBond.PREVPRICE / 100, aBond.MINSTEP);
+        return fmax(aBond.FACEVALUE, prevPriceAbsolute);
+    }
+
+    return aBond.FACEVALUE;
+}
+
+bool IsEmptyDate(const string aDate)
+{
+    return aDate.length == 0
+        || aDate == "0000-00-00";
+}
+
+void MoexGetter(TMember)(JSONValue aVal, ref TMember a)
+{
+    if (!aVal.isNull)
+    {
+        static if (is(TMember == Date))
+        {
+            string dateISOExt = aVal.get!string;
+            if (!IsEmptyDate(dateISOExt))
+            {
+                a = Date.fromISOExtString(dateISOExt);
+            }
+            else
+            {
+                a = Date.min;
+            }
+        }
+        else
+        {
+            a = aVal.get!TMember;
+        }
+    }
 }
 

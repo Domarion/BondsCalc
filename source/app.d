@@ -1,72 +1,18 @@
 import hunt.http.client;
-import std.math;
 import core.time;
 import std.algorithm.sorting;
 import core.stdc.stdlib : exit;
 import moexparser;
+import portfolio;
+import bondshelpers;
+import std.typecons : Tuple;
 
-void PrintBondsExtToFile(const BondExtension[] aBonds, string aFileName)
+void PrintBondsExtToFile(const BondExt[] aBonds, string aFileName)
 {
     File file = File(aFileName, "w");
 
-    foreach(bondExt; aBonds)
-    {
-        PrintObj!Bond(bondExt.TheBond, file);
-        file.writeln(format("%-15s %s%%", "Простая годовая доходность до погашения", bondExt.YieldToMaturity * 100));
-        file.writeln(format("%-15s %s", "Амортизация", bondExt.HasAmortization));
-    }
-
+    PrintObjs!BondExt(aBonds, file);
     file.close();
-}
-
-uint GetCouponCount(const Bond aBondInfo, Date aToday)
-{
-    // TODO: правильно расчитать число купонов по дате погашения.
-
-    if (aBondInfo.MATDATE == aBondInfo.NEXTCOUPON)
-    {
-        return 1;
-    }
-
-    auto daysDiff = GetDaysBetweenDates(aBondInfo.MATDATE, aToday);
-    return cast(uint)daysDiff / cast(uint)aBondInfo.COUPONPERIOD;
-}
-
-double GetYearsToMaturityFromToday(Date aMaturityDate, Date aToday)
-{
-    // TODO: Правильно расчитать число дней до погашения
-    auto daysDiff = GetDaysBetweenDates(aMaturityDate, aToday);
-
-    auto years = daysDiff/365.0;
-    return years.quantize(0.01);
-}
-
-/// Простая годовая доходность до погашения с учётом налогов и сборов
-double GetPerYearYieldToMaturity(
-    const Bond aBondInfo,
-    double aBondActualPrice,
-    double aBrokerMonthlyTax,
-    double aBrokerTransactionTax,
-    Date aToday)
-{
-    // Коэффициент при налоговой ставке 13%
-    const double afterTax = 0.87;
-
-    const uint couponCount = GetCouponCount(aBondInfo, aToday);
-    const double shelfLife = GetYearsToMaturityFromToday(aBondInfo.MATDATE, aToday);
-
-    // Сумма купонов за весь срок с учётом налога 13%
-    const double couponAmount = aBondInfo.COUPONVALUE * couponCount * afterTax;
-
-    // Полная цена приобретения облигации
-    const double allInCost = aBondActualPrice * (1 + aBrokerTransactionTax) + aBrokerMonthlyTax + aBondInfo.ACCRUEDINT;
-    
-    // Доход с учётом разницы полной цены покупки облигации и номинала
-    const double dirtyYield =  couponAmount + aBondInfo.FACEVALUE - allInCost;
-
-    const double perYearYield = dirtyYield / allInCost / shelfLife;
-
-    return perYearYield.quantize(0.001);
 }
 
 Response TakeDataFromMoex(string urlStr, HttpClient aClient)
@@ -81,128 +27,82 @@ Response TakeDataFromMoex(string urlStr, HttpClient aClient)
     return response;
 }
 
-BondExtension[] FilterBondsByGroups(const Bond[] aBonds, const double aDepositRate, long aYearsCount)
+alias BondsGroups = Tuple!(BondExt[] , "uninteresting", BondExt[], "interesting");
+
+BondsGroups FilterBondsByGroups(const BondExt[] aBonds, const double aDepositRate, long aYearsCount, double aBrokerTransactionFee)
 {
     // TODO: разобраться с рейтингами облигаций.
     // TODO: получить рыночные данные.
-    BondExtension[] uninteresting;
-    BondExtension[] moreThanDeposit;
+    BondExt[] uninteresting;
+    BondExt[] moreThanDeposit;
 
     const long year = 365;
     const long years = year * aYearsCount;
     const double moreThanDepositRate = 0.02;
     const auto today = cast(Date)Clock.currTime();
 
-    foreach (bond; aBonds)
+    foreach (const bond; aBonds)
     {
-        if (!IsAllowedBoard(bond.BOARDID)
-            || !empty(bond.OFFERDATE)
-            || bond.COUPONPERIOD == 0
-            || empty(bond.MATDATE)
-            || empty(bond.NEXTCOUPON)
-            || bond.COUPONPERCENT == 0.0
-            || !IsRub(bond.FACEUNIT)
-            || !IsRub(bond.CURRENCYID))
-        {
-            continue;
-        }
+        const double bondActualPrice = GetBondActualPrice(bond);
 
-        // Здесь беру максимальное значение цены
-        double bondActualPrice = bond.FACEVALUE;
+        BondExt ext = bond;
+        ext.HasAmortization = (ext.LOTVALUE != ext.FACEVALUE);        
 
-        if (IsValidPrice(bond.PREVPRICE))
-        {
-            // Предыдущая цена задаётся в процентах от номинала, поэтому делю на 100
-            const double prevPriceAbsolute = quantize(bond.FACEVALUE * bond.PREVPRICE / 100, bond.MINSTEP);
-
-            bondActualPrice = fmax(bondActualPrice, prevPriceAbsolute);
-        }
-
-        if (IsValidPrice(bond.PREVWAPRICE))
-        {
-            const double prevVwapPriceAbsolute = quantize(bond.FACEVALUE * bond.PREVWAPRICE / 100, bond.MINSTEP);
-
-            bondActualPrice = fmax(bondActualPrice, prevVwapPriceAbsolute);
-        }
-
-        const double brokerTransactionFee = 0.01 * 0.05;
-        const double brokerMonthlyTax = 0;
-        const double yieldToMaturity = GetPerYearYieldToMaturity(
-            bond,
+        const auto couponCount = GetCouponCount(bond.MATDATE, bond.COUPONPERIOD, today);
+        const auto commonSimpleYieldToMaturity = CalcCommonSimpleYield(
+            couponCount,
+            ext.COUPONVALUE,
+            ext.FACEVALUE,
             bondActualPrice,
-            brokerMonthlyTax,
-            brokerTransactionFee,
-            today);
+            aBrokerTransactionFee,
+            ext.ACCRUEDINT);
+        const auto simpleYieldToMaturityPerYear = CalcSimpleYieldPerYear(
+            commonSimpleYieldToMaturity,
+            today,
+            ext.MATDATE);
 
-        const long days = GetDaysBetweenDates(bond.MATDATE, today);
-        if (bond.LOTVALUE != bond.FACEVALUE || days < year || days > years)
+        ext.CommonSimpleYieldToMaturity = commonSimpleYieldToMaturity * 100;
+
+        ext.SimpleYieldToMaturityPerYear = simpleYieldToMaturityPerYear * 100;
+    
+        const long days = GetDaysBetweenDates(ext.MATDATE, today);
+        if (ext.FACEVALUE > 10000
+            || days < year
+            || days > years
+            || simpleYieldToMaturityPerYear <= aDepositRate + moreThanDepositRate)
         {
-            BondExtension ext;
-            ext.TheBond = bond;
-            ext.YieldToMaturity = yieldToMaturity;
-            ext.HasAmortization = (bond.LOTVALUE != bond.FACEVALUE);
-
-            uninteresting ~= ext;
-            continue;
-        }
-
-        if (yieldToMaturity <= aDepositRate + moreThanDepositRate)
-        {
-            BondExtension ext;
-            ext.TheBond = bond;
-            ext.YieldToMaturity = yieldToMaturity;
-
             uninteresting ~= ext;
         }
         else
         {
-            BondExtension ext;
-            ext.TheBond = bond;
-            ext.YieldToMaturity = yieldToMaturity;
-
             moreThanDeposit ~= ext;
         }
     }
 
-    PrintBondsExtToFile(uninteresting, "../log/uniteresting.txt");
-    return moreThanDeposit;
+    return BondsGroups(uninteresting, moreThanDeposit);
 }
-
 
 AmortData[] TakeAmortizationData(Date aFrom, Date aTill, HttpClient aClient)
 {
     AmortData[] allAmortsData;
 
     // Получаем курсор, чтобы запрашивать данные по частям.
-    auto amortCursorQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization.json?iss.json=extended&iss.meta=off&iss.only=amortizations.cursor&from=" ~ aFrom.toISOExtString() ~ "&till=" ~ aTill.toISOExtString();
-    auto response = TakeDataFromMoex(amortCursorQuery, aClient);
-    const int httpOk = 200;
-    auto statusCode = response.getStatus();
+    auto amortCursorQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization.json?iss.json=extended&iss.meta=off&iss.only=amortizations.cursor&from="
+        ~ aFrom.toISOExtString()
+        ~ "&till=" ~ aTill.toISOExtString();
 
-    if (statusCode != httpOk)
-    {
-        printf("Unexpected status code: %d\n", statusCode);
-        return allAmortsData;
-    }
-
-    HttpBody resbody =  response.getBody();
-    auto jsonStr = resbody.asString();
+    auto jsonStr = QueryData(aClient, amortCursorQuery);
 
     AmortCursor cursor = ParseAmortCursor(jsonStr);
+
+    PrintObj!AmortCursor(cursor, stdout);
 
     for (; cursor.INDEX < cursor.TOTAL; cursor.INDEX += cursor.PAGESIZE)
     {
         auto amortQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization.json?iss.json=extended&iss.meta=off&iss.only=amortizations&from=" ~ aFrom.toISOExtString() ~ "&till=" ~ aTill.toISOExtString()
         ~ "&start=" ~ to!string(cursor.INDEX) ~ "&limit=" ~ to!string(cursor.PAGESIZE);
-        auto responseAmort = TakeDataFromMoex(amortQuery, aClient);
-        statusCode = responseAmort.getStatus();
-        if (statusCode != httpOk)
-        {
-            printf("Unexpected status code: %d\n", statusCode);
-            return allAmortsData;
-        }
-        HttpBody resbodyAmort =  responseAmort.getBody();
-        auto jsonStrAmort = resbodyAmort.asString();
+
+        auto jsonStrAmort = QueryData(aClient, amortQuery);
 
         auto amortsData = ParseAmortData(jsonStrAmort);
 
@@ -213,11 +113,9 @@ AmortData[] TakeAmortizationData(Date aFrom, Date aTill, HttpClient aClient)
     return allAmortsData;
 }
 
-void ProcessBonds(HttpClient aClient, long aYearsCount)
+string QueryData(HttpClient aClient, string aQuery)
 {
-    auto securitiesQuery = "http://iss.moex.com/iss/engines/stock/markets/bonds/securities.json?iss.json=extended&iss.only=securities&iss.meta=on";
-
-    auto response = TakeDataFromMoex(securitiesQuery, aClient);
+    auto response = TakeDataFromMoex(aQuery, aClient);
 
     auto statusCode = response.getStatus();
 
@@ -225,83 +123,44 @@ void ProcessBonds(HttpClient aClient, long aYearsCount)
     if (statusCode != httpOk)
     {
         printf("Unexpected status code: %d\n", statusCode);
-        return;
+        exit(1);
     }
 
     HttpBody resbody =  response.getBody();
-    auto jsonStr = resbody.asString();
+    return resbody.asString();
+}
 
-    Bond[] bonds = ParseBonds(jsonStr);
-    const double depositRate = 0.04;
-    BondExtension[] moreThanDeposit = FilterBondsByGroups(bonds, depositRate, aYearsCount);
+BondExt[] QueryBonds(HttpClient aClient, string aQuery)
+{
+    auto jsonStr = QueryData(aClient, aQuery);
+    return ParseBonds(jsonStr);
+}
 
-    const auto today = cast(Date)Clock.currTime();
-
-    const auto prevDay = today - 1.days;
-    Date minDate = prevDay, maxDate = today;
-
-    foreach (b; moreThanDeposit)
+void SortBonds(ref BondExt[] aBonds)
+{
+    auto myComp = (BondExt x, BondExt y)
     {
-        auto couponDate = b.TheBond.NEXTCOUPON;
-        if (couponDate < minDate || minDate == prevDay)
-        {
-            minDate = couponDate;
-        }
-
-        if (couponDate > maxDate)
-        {
-            maxDate = couponDate;
-        }
-    }
-
-    writeln(format("minDate:%s, maxDate:%s", minDate, maxDate));
-
-    AmortData[] allAmortsData = TakeAmortizationData(minDate, maxDate, aClient);
-
-    AmortData[string] amortsByISIN;
-
-    foreach (dta; allAmortsData)
-    {
-        amortsByISIN[dta.isin] = dta;
-    }
-
-    BondExtension[] moreThanDepositWithoutAmort;
-
-    foreach (b; moreThanDeposit)
-    {
-        if (b.TheBond.ISIN in amortsByISIN)
-        {
-            b.HasAmortization = true;
-        }
-        else
-        {
-            moreThanDepositWithoutAmort ~= b;
-        }
-    }
-
-    auto myComp = (BondExtension x, BondExtension y)
-    {
-        if (x.YieldToMaturity > y.YieldToMaturity)
+        if (x.SimpleYieldToMaturityPerYear > y.SimpleYieldToMaturityPerYear)
         {
             return true;
         }
         
-        if (x.YieldToMaturity < y.YieldToMaturity)
+        if (x.SimpleYieldToMaturityPerYear < y.SimpleYieldToMaturityPerYear)
         {
             return false;
         }
 
-        if (x.TheBond.MATDATE < y.TheBond.MATDATE)
+        if (x.MATDATE < y.MATDATE)
         {
             return true;
         }
 
-        if (x.TheBond.MATDATE > y.TheBond.MATDATE)
+        if (x.MATDATE > y.MATDATE)
         {
             return false;
         }
 
-        if (x.TheBond.LISTLEVEL < y.TheBond.LISTLEVEL)
+        if (x.LISTLEVEL < y.LISTLEVEL)
         {
             return true;
         }
@@ -309,9 +168,133 @@ void ProcessBonds(HttpClient aClient, long aYearsCount)
         return false;
     };
 
-    moreThanDepositWithoutAmort.sort!(myComp);
+    aBonds.sort!(myComp);
+}
 
-    PrintBondsExtToFile(moreThanDepositWithoutAmort, "../log/goodBondsNoAmort.txt");
+void ProcessBonds(
+    HttpClient aClient,
+    const BondExt[] allBonds,
+    const long aYearsCount,
+    const double aDepositRate,
+    const double aBrokertTransactionFee)
+{
+    auto groups = FilterBondsByGroups(allBonds, aDepositRate, aYearsCount, aBrokertTransactionFee);
+
+    BondExt[] interesting = groups.interesting;
+    BondExt[] uninteresting = groups.uninteresting;
+
+    BondExt[] moreThanDeposit;
+
+    foreach (bond; interesting)
+    {
+        const auto securityQuery = "http://iss.moex.com/iss/securities/"
+            ~ bond.SECID ~ ".json?iss.only=description&description.columns=name,value&iss.meta=off&iss.json=extended";
+        auto jsonStr = QueryData(aClient, securityQuery);
+        const auto secDesc = ParseSecurityDesc(jsonStr);
+
+        bond.ISQUALIFIEDINVESTORS = secDesc.ISQUALIFIEDINVESTORS;
+        bond.EARLYREPAYMENT = secDesc.EARLYREPAYMENT;
+
+        if (bond.ISQUALIFIEDINVESTORS)
+        {
+            uninteresting ~= bond;
+        }
+        else
+        {
+            moreThanDeposit ~= bond;
+        }
+    }
+
+    PrintBondsExtToFile(uninteresting, "../log/uniteresting.txt");
+
+    const auto today = GetToday();
+
+    Date minDate = today, maxDate = today;
+
+    foreach (b; moreThanDeposit)
+    {
+        if (b.MATDATE > maxDate)
+        {
+            maxDate = b.MATDATE;
+        }
+    }
+
+    writeln(format("minDate:%s, maxDate:%s", minDate.toISOExtString(), maxDate.toISOExtString()));
+
+    AmortData[] allAmortsData = TakeAmortizationData(minDate, maxDate, aClient);
+
+    alias ByIsin = AmortData[][string];
+
+    ByIsin amortsByISIN;
+
+    foreach (dta; allAmortsData)
+    {
+        amortsByISIN[dta.isin] ~= dta;
+    }
+
+    BondExt[] withAmort;
+    BondExt[] withoutAmort;
+
+    foreach (b; moreThanDeposit)
+    {
+        if (b.ISIN in amortsByISIN)
+        {
+            b.HasAmortization = true;
+            withAmort ~= b;
+        }
+        else
+        {
+            withoutAmort ~= b;
+        }
+    }
+
+    SortBonds(withoutAmort);
+    PrintBondsExtToFile(withoutAmort, "../log/withoutAmort.txt");
+
+    foreach (b; withAmort)
+    {
+        const auto amortsData = amortsByISIN[b.ISIN];
+        // TODO: Научиться обрабатывать облигации с амортизацией, если она не совпадает
+        // c датой выплаты купона.
+        if (b.NEXTCOUPON == amortsData[0].amortdate)
+        {
+            const double couponPercent = b.COUPONPERCENT/100;
+
+            // Без учёта налога
+            double couponAmount = 0.0;
+            double currentFaceValue = b.FACEVALUE;
+            foreach (amort; amortsData)
+            {
+                couponAmount += currentFaceValue * couponPercent;
+                currentFaceValue -= amort.value_rub;
+            }
+
+            const auto commonSimpleYieldToMaturity = CalcCommonSimpleYield(
+                 couponAmount,
+                 b.FACEVALUE,
+                 GetBondActualPrice(b),
+                 aBrokertTransactionFee,
+                 b.ACCRUEDINT);
+            
+            const auto simpleYieldToMaturityPerYear = CalcSimpleYieldPerYear(
+                commonSimpleYieldToMaturity,
+                today,
+                b.MATDATE);
+
+            // Учёт лучше вести по CommonSimpleYieldToMaturity, так как из-за амортизации среднегодовой доход будет низким.
+            b.CommonSimpleYieldToMaturity = 100 * commonSimpleYieldToMaturity;
+            b.SimpleYieldToMaturityPerYear = 100 * simpleYieldToMaturityPerYear;
+        }
+        else
+        {
+            writefln("ISIN %s: Дата выплаты купона и дата амортизации различны.", b.ISIN);
+            b.CommonSimpleYieldToMaturity = 0;
+            b.SimpleYieldToMaturityPerYear = 0;
+        }
+    }
+
+    SortBonds(withAmort);
+    PrintBondsExtToFile(withAmort, "../log/withAmort.txt");
 }
 
 void StopEventLoop()
@@ -320,38 +303,113 @@ void StopEventLoop()
     NetUtil.eventLoop.stop();
 }
 
+double GetYieldIfSellToday(const Deal aDealInfo, const BondExt aBondInfo)
+{
+    // TODO: проверить формулу
+    const double brokerTax = 0.05 * 0.01;
+    const double allInCost = aDealInfo.BuyPrice * (1 + brokerTax) * aDealInfo.Quantity + aDealInfo.AccruedIntQty;
+
+    const double prevPrice = quantize!floor(aBondInfo.FACEVALUE * aBondInfo.PREVWAPRICE / 100, aBondInfo.MINSTEP);
+    const double sellPx = prevPrice + aBondInfo.ACCRUEDINT;
+
+    const double sellTax = aDealInfo.BuyPrice >= sellPx ? 1 : 0.87;
+
+    const double sellCost = (prevPrice * (1 - brokerTax) + aBondInfo.ACCRUEDINT) * aDealInfo.Quantity * sellTax;
+
+    return sellCost + aDealInfo.CouponValueInQty - allInCost;
+}
+
+void ProcessPortfolio(string aFileName, const Deal[] aDeals, const BondExt[] aBonds, double aBrokerTransactionFee)
+{
+    // Простая обработка портфеля без амортизаций
+    BondExt[string] bondsByIsin;
+
+    foreach (bond; aBonds)
+    {
+        bondsByIsin[bond.ISIN] = bond;
+    }
+
+    Deal[] processedDeals;
+
+    foreach (const deal; aDeals)
+    {
+        Deal processedDeal = deal;
+
+        if (processedDeal.ISIN in bondsByIsin)
+        {
+            auto bond = bondsByIsin[deal.ISIN];
+            const auto accruedIntForOne = processedDeal.AccruedIntQty / processedDeal.Quantity;
+
+            if (processedDeal.HasAmortization)
+            {
+                continue;
+            }
+
+            const auto couponCount = GetCouponCount(bond.MATDATE, bond.COUPONPERIOD, processedDeal.BuyDate);
+
+            const double commonSimpleYield = CalcCommonSimpleYield(
+                couponCount * bond.COUPONVALUE,
+                bond.FACEVALUE,
+                processedDeal.BuyPrice,
+                aBrokerTransactionFee,
+                accruedIntForOne);
+
+            processedDeal.CommonSimpleYieldToMaturity = 100 * commonSimpleYield;
+
+            processedDeal.SimpleYieldToMaturityPerYear = 100 * CalcSimpleYieldPerYear(
+                commonSimpleYield,
+                processedDeal.BuyDate,
+                bond.MATDATE);
+
+            // число выплаченных купонов
+            processedDeal.CouponPaidCount = GetCouponPaidCount(
+                processedDeal.BuyDate,
+                GetToday(),
+                bond.MATDATE,
+                bond.COUPONPERIOD);
+            
+            // объем выплаченных купонов
+            if ( processedDeal.CouponPaidCount > 0)
+            {
+                const auto couponQty =  bond.COUPONVALUE * processedDeal.CouponPaidCount * processedDeal.Quantity;
+                processedDeal.CouponValueInQty = couponQty * 0.87 - processedDeal.AccruedIntQty;
+            }
+
+            processedDeal.YieldIfSellToday = GetYieldIfSellToday(processedDeal, bond);
+
+            processedDeals ~= processedDeal;
+        }
+    }
+
+    File f = File(aFileName, "w");
+    PrintObjs!Deal(processedDeals, f);
+    f.close();
+}
+
 void main()
 {
+    const double brokerTransactionFee = 0.01 * 0.05;
+
+    const string portfolioFilePath = "../Report.csv";
+
+    const auto deals = ImportPortfolio(portfolioFilePath);
+
     HttpClient client = new HttpClient();
 
-    const long yearsCount = 3;
-    ProcessBonds(client, yearsCount);
+    const auto securitiesQuery = "http://iss.moex.com/iss/engines/stock/markets/bonds/securities.json?iss.json=extended&iss.only=securities&iss.meta=on";
+    const auto allBonds = QueryBonds(client, securitiesQuery);
+
+    // Взять и обработать портфель на предмет прошлой доходности и перспектив в зависимости от deals, bonds.
+    const string processedPortfolioFilePath = "../log/reports.txt";
+    ProcessPortfolio(processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
+
+    const long yearsCount = 2;
+    const double depositRate = 0.04;
+
+    ProcessBonds(client, allBonds, yearsCount, depositRate, brokerTransactionFee);
 
     StopEventLoop();
 
     exit(0);
 }
 
-unittest
-{
-    ///Расчёт числа купонов
-
-    auto today = Date(2021, 7, 16);
-    {
-        Bond b;
-        b.MATDATE = Date(2022, 6, 15);
-        b.COUPONPERIOD = 910;
-        b.NEXTCOUPON = Date(2022, 6, 15);
-        const auto actual = GetCouponCount(b, today);
-        assert(actual == 1);
-    }
-
-    {
-        Bond b;
-        b.MATDATE = Date(2021, 8, 17);
-        b.COUPONPERIOD = 31;
-        b.NEXTCOUPON = Date(2021, 7, 17);
-        const auto actual = GetCouponCount(b, today);
-        assert(actual == 2);
-    }
-}
