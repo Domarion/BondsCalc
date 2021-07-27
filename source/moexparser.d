@@ -37,14 +37,14 @@ BondExt[] ParseBonds(string aJsonString)
     return bonds;
 }
 
-AmortCursor ParseAmortCursor(string aJsonString)
+MoexCursor ParseMoexCursor(string aJsonString, string aCursorType)
 {
     auto jsonObj = parseJSON(aJsonString);
     // У Moex данные складываются в массив из 2х элементов
     auto jsonObj1 = jsonObj.array[1];
-    auto cursor0 = jsonObj1["amortizations.cursor"].array[0];
+    auto cursor0 = jsonObj1[aCursorType ~ ".cursor"].array[0];
 
-    return GetObj!(AmortCursor, MoexGetter)(cursor0.object);
+    return GetObj!(MoexCursor, MoexGetter)(cursor0.object);
 }
 
 AmortData[] ParseAmortData(string aJsonString)
@@ -71,6 +71,29 @@ AmortData[] ParseAmortData(string aJsonString)
 
     return amortsData;
 }
+
+CouponData[] ParseCouponData(string aJsonString)
+{
+    CouponData[] couponsData;
+
+    auto jsonObj = parseJSON(aJsonString);
+    // У Moex данные складываются в массив из 2х элементов
+    auto jsonObj1 = jsonObj.array[1];
+    auto couponsJsonData = jsonObj1["coupons"].array;
+    // В узле securities первым узлом идут метаданные, затем массив с данными
+    if (couponsJsonData.length > 0)
+    {
+        foreach (couponJson; couponsJsonData)
+        {
+            CouponData c = GetObj!(CouponData, MoexGetter)(couponJson.object);
+
+            couponsData ~= c;
+        }
+    }
+
+    return couponsData;
+}
+
 
 SecurityDesc ParseSecurityDesc(const string aJsonString)
 {

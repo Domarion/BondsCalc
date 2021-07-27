@@ -48,7 +48,8 @@ struct BondExt
     bool EARLYREPAYMENT = false;
 }
 
-struct AmortCursor
+// Можно использовать и для купонов
+struct MoexCursor
 {
     long INDEX;
     long TOTAL;
@@ -64,10 +65,21 @@ struct AmortData
     double facevalue = 0.0; // Актуальный размер номинала
     double initialfacevalue = 0.0; // Изначальный размер номинала
     // string faceunit;
-//     double valueprc= 0.0;
+//     double valueprc = 0.0;
 //     double value= 0.0;
     double value_rub = 0.0; // размер амортизации (зависит от from и till)
     string data_source;
+}
+
+struct CouponData
+{
+    string isin;
+    string name;
+    Date coupondate; // Дата выплаты купона.
+    // Date recorddate; // Непонятно какая дата
+//     double valueprc = 0.0;
+//     double value= 0.0;
+    double value_rub = 0.0; // размер купона (зависит от from и till)
 }
 
 struct SecurityDesc

@@ -1,11 +1,11 @@
 import hunt.http.client;
 import core.time;
-import std.algorithm.sorting;
 import core.stdc.stdlib : exit;
 import moexparser;
 import portfolio;
 import bondshelpers;
 import std.typecons : Tuple;
+import std.algorithm;
 
 void PrintBondsExtToFile(const BondExt[] aBonds, string aFileName)
 {
@@ -82,24 +82,32 @@ BondsGroups FilterBondsByGroups(const BondExt[] aBonds, const double aDepositRat
     return BondsGroups(uninteresting, moreThanDeposit);
 }
 
-AmortData[] TakeAmortizationData(Date aFrom, Date aTill, HttpClient aClient)
+AmortData[] TakeAmortizationDataForBond(HttpClient aClient, const string aIsin, const Date aFrom, const Date aTill)
 {
     AmortData[] allAmortsData;
 
     // Получаем курсор, чтобы запрашивать данные по частям.
-    auto amortCursorQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization.json?iss.json=extended&iss.meta=off&iss.only=amortizations.cursor&from="
+    string isinWithSlash = aIsin.length > 0
+        ? "/" ~ aIsin
+        : "";
+
+    auto amortCursorQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization"
+        ~ isinWithSlash  ~ ".json?iss.json=extended&iss.meta=off&iss.only=amortizations.cursor&from="
         ~ aFrom.toISOExtString()
         ~ "&till=" ~ aTill.toISOExtString();
 
     auto jsonStr = QueryData(aClient, amortCursorQuery);
 
-    AmortCursor cursor = ParseAmortCursor(jsonStr);
+    MoexCursor cursor = ParseMoexCursor(jsonStr, "amortizations");
 
-    PrintObj!AmortCursor(cursor, stdout);
+    PrintObj!MoexCursor(cursor, stdout);
 
     for (; cursor.INDEX < cursor.TOTAL; cursor.INDEX += cursor.PAGESIZE)
     {
-        auto amortQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization.json?iss.json=extended&iss.meta=off&iss.only=amortizations&from=" ~ aFrom.toISOExtString() ~ "&till=" ~ aTill.toISOExtString()
+        auto amortQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization"
+         ~ isinWithSlash  ~".json?iss.json=extended&iss.meta=off&iss.only=amortizations&from="
+         ~ aFrom.toISOExtString()
+         ~ "&till=" ~ aTill.toISOExtString()
         ~ "&start=" ~ to!string(cursor.INDEX) ~ "&limit=" ~ to!string(cursor.PAGESIZE);
 
         auto jsonStrAmort = QueryData(aClient, amortQuery);
@@ -109,8 +117,47 @@ AmortData[] TakeAmortizationData(Date aFrom, Date aTill, HttpClient aClient)
         allAmortsData ~= amortsData;
     }
 
-    PrintObjectsToFile(allAmortsData, "../log/amortizationInfo.txt");
+    PrintObjectsToFile(allAmortsData, "../log/amortizationInfo"~ aIsin ~".txt");
     return allAmortsData;
+}
+
+CouponData[] TakeCouponDataForBond(HttpClient aClient, const string aIsin, const Date aFrom, const Date aTill)
+{
+    CouponData[] allCouponsData;
+
+    string isinWithSlash = (aIsin.length > 0)
+        ? "/" ~ aIsin
+        : "";
+
+    // Получаем курсор, чтобы запрашивать данные по частям.
+    auto couponCursorQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization"
+        ~ isinWithSlash  ~".json?iss.json=extended&iss.meta=off&iss.only=coupons.cursor&from="
+        ~ aFrom.toISOExtString()
+        ~ "&till=" ~ aTill.toISOExtString();
+
+    auto jsonStr = QueryData(aClient, couponCursorQuery);
+
+    MoexCursor cursor = ParseMoexCursor(jsonStr, "coupons");
+
+    PrintObj!MoexCursor(cursor, stdout);
+
+    for (; cursor.INDEX < cursor.TOTAL; cursor.INDEX += cursor.PAGESIZE)
+    {
+        auto couponQuery = "http://iss.moex.com/iss/statistics/engines/stock/markets/bonds/bondization"
+         ~ isinWithSlash  ~".json?iss.json=extended&iss.meta=off&iss.only=coupons&from="
+         ~ aFrom.toISOExtString()
+         ~ "&till=" ~ aTill.toISOExtString()
+        ~ "&start=" ~ to!string(cursor.INDEX) ~ "&limit=" ~ to!string(cursor.PAGESIZE);
+
+        auto jsonStrCoupon = QueryData(aClient, couponQuery);
+
+        auto couponData = ParseCouponData(jsonStrCoupon);
+
+        allCouponsData ~= couponData;
+    }
+
+    PrintObjectsToFile(allCouponsData, "../log/couponsInfo"~ aIsin ~".txt");
+    return allCouponsData;
 }
 
 string QueryData(HttpClient aClient, string aQuery)
@@ -171,6 +218,13 @@ void SortBonds(ref BondExt[] aBonds)
     aBonds.sort!(myComp);
 }
 
+Date GetMaxDate(BondExt[] aBonds, const Date aFrom)
+{
+    auto date = aBonds.maxElement!(x => x.MATDATE).MATDATE;
+
+    return max(date, aFrom);
+}
+
 void ProcessBonds(
     HttpClient aClient,
     const BondExt[] allBonds,
@@ -209,27 +263,17 @@ void ProcessBonds(
 
     const auto today = GetToday();
 
-    Date minDate = today, maxDate = today;
-
-    foreach (b; moreThanDeposit)
-    {
-        if (b.MATDATE > maxDate)
-        {
-            maxDate = b.MATDATE;
-        }
-    }
+    Date minDate = today, maxDate = GetMaxDate(moreThanDeposit, today);
 
     writeln(format("minDate:%s, maxDate:%s", minDate.toISOExtString(), maxDate.toISOExtString()));
 
-    AmortData[] allAmortsData = TakeAmortizationData(minDate, maxDate, aClient);
+    auto allAmortsData = TakeAmortizationDataForBond(aClient, "", minDate, maxDate);
 
-    alias ByIsin = AmortData[][string];
+    AmortData[][string] amortsByISIN;
 
-    ByIsin amortsByISIN;
-
-    foreach (dta; allAmortsData)
+    foreach (data; allAmortsData)
     {
-        amortsByISIN[dta.isin] ~= dta;
+        amortsByISIN[data.isin] ~= data;
     }
 
     BondExt[] withAmort;
@@ -253,44 +297,28 @@ void ProcessBonds(
 
     foreach (b; withAmort)
     {
-        const auto amortsData = amortsByISIN[b.ISIN];
-        // TODO: Научиться обрабатывать облигации с амортизацией, если она не совпадает
-        // c датой выплаты купона.
-        if (b.NEXTCOUPON == amortsData[0].amortdate)
+        const auto couponData = TakeCouponDataForBond(aClient, b.SECID, minDate, b.MATDATE);
+        double couponAmount = 0.0;
+        foreach (coupon; couponData)
         {
-            const double couponPercent = b.COUPONPERCENT/100;
-
-            // Без учёта налога
-            double couponAmount = 0.0;
-            double currentFaceValue = b.FACEVALUE;
-            foreach (amort; amortsData)
-            {
-                couponAmount += currentFaceValue * couponPercent;
-                currentFaceValue -= amort.value_rub;
-            }
-
-            const auto commonSimpleYieldToMaturity = CalcCommonSimpleYield(
-                 couponAmount,
-                 b.FACEVALUE,
-                 GetBondActualPrice(b),
-                 aBrokertTransactionFee,
-                 b.ACCRUEDINT);
-            
-            const auto simpleYieldToMaturityPerYear = CalcSimpleYieldPerYear(
-                commonSimpleYieldToMaturity,
-                today,
-                b.MATDATE);
-
-            // Учёт лучше вести по CommonSimpleYieldToMaturity, так как из-за амортизации среднегодовой доход будет низким.
-            b.CommonSimpleYieldToMaturity = 100 * commonSimpleYieldToMaturity;
-            b.SimpleYieldToMaturityPerYear = 100 * simpleYieldToMaturityPerYear;
+            couponAmount += coupon.value_rub;
         }
-        else
-        {
-            writefln("ISIN %s: Дата выплаты купона и дата амортизации различны.", b.ISIN);
-            b.CommonSimpleYieldToMaturity = 0;
-            b.SimpleYieldToMaturityPerYear = 0;
-        }
+
+        const auto commonSimpleYieldToMaturity = CalcCommonSimpleYield(
+            couponAmount,
+            b.FACEVALUE,
+            GetBondActualPrice(b),
+            aBrokertTransactionFee,
+            b.ACCRUEDINT);
+        
+        const auto simpleYieldToMaturityPerYear = CalcSimpleYieldPerYear(
+            commonSimpleYieldToMaturity,
+            today,
+            b.MATDATE);
+
+        // Учёт лучше вести по CommonSimpleYieldToMaturity, так как из-за амортизации среднегодовой доход будет низким.
+        b.CommonSimpleYieldToMaturity = 100 * commonSimpleYieldToMaturity;
+        b.SimpleYieldToMaturityPerYear = 100 * simpleYieldToMaturityPerYear;
     }
 
     SortBonds(withAmort);
@@ -319,7 +347,157 @@ double GetYieldIfSellToday(const Deal aDealInfo, const BondExt aBondInfo)
     return sellCost + aDealInfo.CouponValueInQty - allInCost;
 }
 
-void ProcessPortfolio(string aFileName, const Deal[] aDeals, const BondExt[] aBonds, double aBrokerTransactionFee)
+alias CouponPaymentInfo = Tuple!(
+    double, "oldCouponAmount",
+    double, "newCouponAmount",
+    double, "oldFaceValue");
+
+// deprecated. Можно получать графики выплат и амортизаций от биржи.
+CouponPaymentInfo GetCouponPaymentInfoForAmorts(
+    const AmortData[] aAmortData,
+    const Deal aProcessedDeal,
+    const double aPeriod,
+    const double aCurrentFaceValue,
+    const double aCouponPersent,
+    const Date aToday)
+{
+    CouponPaymentInfo info;
+    info.oldCouponAmount = 0.0;
+    info.newCouponAmount = 0.0;
+    info.oldFaceValue = aCurrentFaceValue;
+
+    int oldCouponsCount = 0;
+
+    if (aProcessedDeal.CouponPaidCount > 0)
+    {
+        for (; oldCouponsCount < aAmortData.length && aAmortData[oldCouponsCount].amortdate < aToday; ++oldCouponsCount){}
+
+        // Назад во времени
+
+        // Если амортизации ещё не было.
+        if (oldCouponsCount == 0)
+        {
+            info.oldCouponAmount = quantize!floor(
+                aCurrentFaceValue * aCouponPersent / aPeriod * aProcessedDeal.CouponPaidCount, 0.01);
+        }
+        else
+        {
+            for (int index = oldCouponsCount - 1; index >= 0 ; --index)
+            {
+                info.oldFaceValue += aAmortData[index].value_rub;
+                info.oldCouponAmount += info.oldFaceValue * aCouponPersent;
+            }
+        }
+    }
+
+    double currentFaceValue = aCurrentFaceValue;
+
+    // Вперед во времени
+    for (int index = oldCouponsCount; index < aAmortData.length; ++index)
+    {
+        info.newCouponAmount += currentFaceValue * aCouponPersent;
+        currentFaceValue -= aAmortData[index].value_rub;
+    }
+
+    return info;
+}
+
+CouponPaymentInfo GetCouponPaymentInfoForAmortsAndCoupons(
+    const AmortData[] aAmortData,
+    const CouponData[] aCouponData,
+    const Deal aProcessedDeal,
+    const double aCurrentFaceValue,
+    const Date aToday)
+{
+    CouponPaymentInfo info;
+    info.oldCouponAmount = 0.0;
+    info.newCouponAmount = 0.0;
+    info.oldFaceValue = aCurrentFaceValue;
+
+    for (int index; index < aAmortData.length && aAmortData[index].amortdate < aToday; ++index)
+    {
+        info.oldFaceValue += aAmortData[index].value_rub;
+    }
+
+    long newCouponsIndex = 0;
+    if (aProcessedDeal.CouponPaidCount > 0)
+    {
+        // Назад во времени
+        long oldCouponsIndex = 0;
+
+        for (; oldCouponsIndex < aCouponData.length && aCouponData[oldCouponsIndex].coupondate <= aProcessedDeal.BuyDate
+             ; ++oldCouponsIndex){}
+
+        newCouponsIndex = oldCouponsIndex + aProcessedDeal.CouponPaidCount;
+
+        foreach (long index; oldCouponsIndex .. newCouponsIndex)
+        {
+            info.oldCouponAmount += aCouponData[index].value_rub;
+        }
+    }
+
+    for (; newCouponsIndex < aCouponData.length; ++newCouponsIndex)
+    {
+        info.newCouponAmount += aCouponData[newCouponsIndex].value_rub;
+    }
+
+    return info;
+}
+
+CouponPaymentInfo GetCouponPaymentInfoCommon(
+    HttpClient aClient,
+    const Deal aProcessedDeal,
+    const BondExt aBond,
+    const Date aToday)
+{
+    CouponPaymentInfo info;
+
+    if (!aProcessedDeal.HasAmortization)
+    {
+        const auto couponCount = GetCouponCount(aBond.MATDATE, aBond.COUPONPERIOD, aProcessedDeal.BuyDate);
+
+        info.oldFaceValue = aBond.FACEVALUE;
+        info.oldCouponAmount = aBond.COUPONVALUE * aProcessedDeal.CouponPaidCount;
+        info.newCouponAmount = couponCount * aBond.COUPONVALUE;
+        return info;
+    }
+
+    auto amortsData = TakeAmortizationDataForBond(
+        aClient,
+        aProcessedDeal.ISIN,
+        aProcessedDeal.BuyDate,
+        aBond.MATDATE);
+
+    if (amortsData.length == 0)
+    {
+        writefln("ISIN %s: Нет данных по графику амортизационных выплат.", aBond.ISIN);
+    }
+
+    auto couponsData = TakeCouponDataForBond(
+        aClient,
+        aProcessedDeal.ISIN,
+        aProcessedDeal.BuyDate,
+        aBond.MATDATE);
+
+    if (couponsData.length == 0)
+    {
+        writefln("ISIN %s: Нет данных по графику купонных выплат.", aBond.ISIN);
+    }
+
+    return GetCouponPaymentInfoForAmortsAndCoupons(
+        amortsData,
+        couponsData,
+        aProcessedDeal,
+        aBond.FACEVALUE,
+        aToday);
+}
+
+void ProcessPortfolio(
+    HttpClient aClient,
+    const string aFileName,
+    const Deal[] aDeals,
+    const BondExt[] aBonds,
+    const double aBrokerTransactionFee)
 {
     // Простая обработка портфеля без амортизаций
     BondExt[string] bondsByIsin;
@@ -330,6 +508,7 @@ void ProcessPortfolio(string aFileName, const Deal[] aDeals, const BondExt[] aBo
     }
 
     Deal[] processedDeals;
+    const auto today = GetToday();
 
     foreach (const deal; aDeals)
     {
@@ -340,16 +519,30 @@ void ProcessPortfolio(string aFileName, const Deal[] aDeals, const BondExt[] aBo
             auto bond = bondsByIsin[deal.ISIN];
             const auto accruedIntForOne = processedDeal.AccruedIntQty / processedDeal.Quantity;
 
-            if (processedDeal.HasAmortization)
+            processedDeal.MaturityDate = bond.MATDATE;
+
+            // число выплаченных купонов
+            processedDeal.CouponPaidCount = GetCouponPaidCount(
+                processedDeal.BuyDate,
+                today,
+                bond.MATDATE,
+                bond.COUPONPERIOD);
+
+            const auto info = GetCouponPaymentInfoCommon(aClient, processedDeal, bond, today);
+            writefln("couponPaidAmt: %s", info.oldCouponAmount);
+
+            if (isNaN(info.oldFaceValue))
             {
                 continue;
             }
 
-            const auto couponCount = GetCouponCount(bond.MATDATE, bond.COUPONPERIOD, processedDeal.BuyDate);
+            processedDeal.FaceValuePaid = bond.FACEVALUE - info.oldFaceValue;
+
+            const auto couponAmount = info.oldCouponAmount + info.newCouponAmount;
 
             const double commonSimpleYield = CalcCommonSimpleYield(
-                couponCount * bond.COUPONVALUE,
-                bond.FACEVALUE,
+                couponAmount,
+                info.oldFaceValue,
                 processedDeal.BuyPrice,
                 aBrokerTransactionFee,
                 accruedIntForOne);
@@ -360,18 +553,11 @@ void ProcessPortfolio(string aFileName, const Deal[] aDeals, const BondExt[] aBo
                 commonSimpleYield,
                 processedDeal.BuyDate,
                 bond.MATDATE);
-
-            // число выплаченных купонов
-            processedDeal.CouponPaidCount = GetCouponPaidCount(
-                processedDeal.BuyDate,
-                GetToday(),
-                bond.MATDATE,
-                bond.COUPONPERIOD);
             
             // объем выплаченных купонов
             if ( processedDeal.CouponPaidCount > 0)
             {
-                const auto couponQty =  bond.COUPONVALUE * processedDeal.CouponPaidCount * processedDeal.Quantity;
+                const auto couponQty =  info.oldCouponAmount * processedDeal.Quantity;
                 processedDeal.CouponValueInQty = couponQty * 0.87 - processedDeal.AccruedIntQty;
             }
 
@@ -390,18 +576,16 @@ void main()
 {
     const double brokerTransactionFee = 0.01 * 0.05;
 
-    const string portfolioFilePath = "../Report.csv";
-
-    const auto deals = ImportPortfolio(portfolioFilePath);
-
     HttpClient client = new HttpClient();
 
     const auto securitiesQuery = "http://iss.moex.com/iss/engines/stock/markets/bonds/securities.json?iss.json=extended&iss.only=securities&iss.meta=on";
     const auto allBonds = QueryBonds(client, securitiesQuery);
 
     // Взять и обработать портфель на предмет прошлой доходности и перспектив в зависимости от deals, bonds.
+    const string portfolioFilePath = "../Report.csv";
     const string processedPortfolioFilePath = "../log/reports.txt";
-    ProcessPortfolio(processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
+    const auto deals = ImportPortfolio(portfolioFilePath);
+    ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
 
     const long yearsCount = 2;
     const double depositRate = 0.04;

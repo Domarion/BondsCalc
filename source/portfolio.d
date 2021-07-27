@@ -12,7 +12,6 @@ struct Deal
     string ISIN;
     string Name;
     Date BuyDate = Date.min;
-    Date MaturityDate = Date.min;
     double BuyPrice = 0.0;
     long Quantity;
     double AccruedIntQty = 0.0; // НКД за весь объем
@@ -21,12 +20,15 @@ struct Deal
     bool HasAmortization = false; // Есть ли амортизация
     
     // Группа вычисляемых полей
+    Date MaturityDate = Date.min;
+
     @("%") double SimpleYieldToMaturityPerYear = 0.0; // Простая годовая доходность в процентах от даты покупки до погашения
     @("%") double CommonSimpleYieldToMaturity = 0.0; // Простая общая доходность в процентах от даты покупки до погашения
 
     long CouponPaidCount; // Сколько купонов было выплачено
     double CouponValueInQty = 0.0; // Объем выплаченных купонов за вычетом налогов и НКД.
     double YieldIfSellToday = 0.0; // Доход в абсолютном значении, если продать облигации сегодня по прошлой VWAP цене (вычет всех расходов)
+    double FaceValuePaid = 0.0; // Погашенная часть номинала за время владения
 }
 
 Deal[] ImportPortfolio(string aFileName)
