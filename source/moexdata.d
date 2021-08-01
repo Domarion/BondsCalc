@@ -6,20 +6,28 @@ import std.json;
 
 struct BondExt
 {
+    // Небиржевые поля:
+    @("% Общая простая доходность") double CommonSimpleYieldToMaturity = 0.0; // Общая простая доходность к дате погашения облигации
+    @("% Годовая простая доходность") double SimpleYieldToMaturityPerYear = 0.0; // Годовая простая доходность к дате погашения облигации
+    bool HasAmortization = false;
+
 // Описание полей здесь: https://iss.moex.com/iss/engines/stock/markets/bonds/
     string SECID; // Идентификатор финансового инструмента
     string BOARDID; // Идентификатор режима торгов
+    string ISIN; // Какой-то код
+    double COUPONPERCENT = 0.0; // Ставка купона, %
+    double ACCRUEDINT = 0.0; // НКД на дату расчетов, в валюте расчетов
+    Date MATDATE = Date.min; // Дата погашения, дд.мм.гг
+
     string SHORTNAME; // Краткое наименование ценной бумаги
     double PREVWAPRICE; // Средневзвешенная цена предыдущего дня, % к номиналу
     double COUPONVALUE = 0.0; // Сумма купона, в валюте номинала
     Date NEXTCOUPON = Date.min; // Дата окончания купона
-    double ACCRUEDINT = 0.0; // НКД на дату расчетов, в валюте расчетов
     double PREVPRICE; // Цена последней сделки пред. дня, % к номиналу
     int LOTSIZE; // Размер лота, ц.б.
     double FACEVALUE = 0.0; // Непогашенный долг. Может быть меньше номинала из-за амортизации
     string BOARDNAME; // Режим торгов
     string STATUS;
-    Date MATDATE = Date.min; // Дата погашения, дд.мм.гг
     int DECIMALS; // Точность, знаков после запятой
     int COUPONPERIOD; // Длительность купона
     long ISSUESIZE; // Объем выпуска, штук
@@ -29,20 +37,14 @@ struct BondExt
     string FACEUNIT; // Валюта номинала
     double BUYBACKPRICE; // Цена оферты
     Date BUYBACKDATE = Date.min; // Дата, к которой рассчитывается доходность (если данное поле не заполнено, то "Доходность посл.сделки" рассчитывается к Дате погашения)
-    string ISIN; // Какой-то код
     string CURRENCYID; // Сопр. валюта инструмента
     long ISSUESIZEPLACED; // Количество ценных бумаг в обращении
     int LISTLEVEL; // Уровень листинга
     string SECTYPE; // Тип ценной бумаги
-    double COUPONPERCENT = 0.0; // Ставка купона, %
     Date OFFERDATE = Date.min; // Дата Оферты
     Date SETTLEDATE = Date.min; // Дата расчётов сделки(особо не интересна)
     double LOTVALUE = 0.0; // Номинальная стоимость лота, в валюте номинала
 
-    // Небиржевые поля:
-    @("% Общая простая доходность") double CommonSimpleYieldToMaturity = 0.0; // Общая простая доходность к дате погашения облигации
-    @("% Годовая простая доходность") double SimpleYieldToMaturityPerYear = 0.0; // Годовая простая доходность к дате погашения облигации
-    bool HasAmortization = false;
     // Cм. SecurityDesc
     bool ISQUALIFIEDINVESTORS = false;
     bool EARLYREPAYMENT = false;

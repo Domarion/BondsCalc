@@ -197,22 +197,7 @@ void SortBonds(ref BondExt[] aBonds)
             return false;
         }
 
-        if (x.MATDATE < y.MATDATE)
-        {
-            return true;
-        }
-
-        if (x.MATDATE > y.MATDATE)
-        {
-            return false;
-        }
-
-        if (x.LISTLEVEL < y.LISTLEVEL)
-        {
-            return true;
-        }
-
-        return false;
+        return x.MATDATE < y.MATDATE;
     };
 
     aBonds.sort!(myComp);
@@ -223,6 +208,46 @@ Date GetMaxDate(BondExt[] aBonds, const Date aFrom)
     auto date = aBonds.maxElement!(x => x.MATDATE).MATDATE;
 
     return max(date, aFrom);
+}
+
+void PrintByLevels(const BondExt[] aBonds, const string aFilePrefix)
+{
+    string firstPart = "../log/" ~ aFilePrefix;
+
+    BondExt[] level1, level2, level3;
+
+    foreach (const b; aBonds)
+    {
+        switch (b.LISTLEVEL)
+        {
+        case 1:
+            level1 ~= b;
+            break;
+        case 2:
+            level2 ~= b;
+            break;
+        case 3:
+            level3 ~= b;
+            break;
+        default:
+            writeln("Wrong list level, SECID: %s", b.SECID);
+            break;
+        }
+    }
+
+    SortBonds(level1);
+    SortBonds(level2);
+    SortBonds(level3);
+
+
+    WriteToCsv!BondExt(firstPart ~ "-level1.csv", level1);
+    WriteToCsv!BondExt(firstPart ~ "-level2.csv", level2);
+    WriteToCsv!BondExt(firstPart ~ "-level3.csv", level3);
+
+
+    PrintBondsExtToFile(level1, firstPart ~ "-level1.txt");
+    PrintBondsExtToFile(level2, firstPart ~ "-level2.txt");
+    PrintBondsExtToFile(level3, firstPart ~ "-level3.txt");
 }
 
 void ProcessBonds(
@@ -292,8 +317,7 @@ void ProcessBonds(
         }
     }
 
-    SortBonds(withoutAmort);
-    PrintBondsExtToFile(withoutAmort, "../log/withoutAmort.txt");
+    PrintByLevels(withoutAmort, "withoutAmort");
 
     foreach (b; withAmort)
     {
@@ -321,8 +345,7 @@ void ProcessBonds(
         b.SimpleYieldToMaturityPerYear = 100 * simpleYieldToMaturityPerYear;
     }
 
-    SortBonds(withAmort);
-    PrintBondsExtToFile(withAmort, "../log/withAmort.txt");
+    PrintByLevels(withAmort, "withAmort");
 }
 
 void StopEventLoop()
@@ -529,7 +552,6 @@ void ProcessPortfolio(
                 bond.COUPONPERIOD);
 
             const auto info = GetCouponPaymentInfoCommon(aClient, processedDeal, bond, today);
-            writefln("couponPaidAmt: %s", info.oldCouponAmount);
 
             if (isNaN(info.oldFaceValue))
             {
@@ -567,9 +589,7 @@ void ProcessPortfolio(
         }
     }
 
-    File f = File(aFileName, "w");
-    PrintObjs!Deal(processedDeals, f);
-    f.close();
+    WriteToCsv!Deal(aFileName, processedDeals);
 }
 
 void main()
@@ -583,7 +603,7 @@ void main()
 
     // Взять и обработать портфель на предмет прошлой доходности и перспектив в зависимости от deals, bonds.
     const string portfolioFilePath = "../Report.csv";
-    const string processedPortfolioFilePath = "../log/reports.txt";
+    const string processedPortfolioFilePath = "../log/reports.csv";
     const auto deals = ImportPortfolio(portfolioFilePath);
     ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
 
@@ -596,4 +616,3 @@ void main()
 
     exit(0);
 }
-

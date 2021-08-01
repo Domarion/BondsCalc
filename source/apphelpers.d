@@ -6,6 +6,7 @@ public import std.stdio;
 public import std.conv : to;
 public import std.datetime;
 import std.math;
+import std.traits : FieldNameTuple;
 
 bool empty(Date aDate)
 {
@@ -102,8 +103,6 @@ string[string] GetOneAttributeForFields(TStruct)()
 
 void PrintObj(TStruct)(const TStruct aObj, File aStream)
 {
-    import std.traits : FieldNameTuple;
-
     auto fieldList = FieldNameTuple!TStruct;
 
     auto values = aObj.tupleof;
@@ -136,6 +135,33 @@ void PrintObjectsToFile(T)(const T[] aObjs, string aFileName)
     PrintObjs(aObjs, file);
     file.close();
 }
+
+/// Записывает поля в файл csv
+void WriteToCsv(TStruct)(string aFileName, const TStruct[] aObjs, char aSeparator = ';')
+{
+    File file = File(aFileName, "w");
+
+    // Записываем заголовок
+    auto fieldList = FieldNameTuple!TStruct;
+    foreach (fieldName; fieldList)
+    {
+        file.write(fieldName ~ aSeparator);
+    }
+    file.write('\n');
+
+    foreach (obj; aObjs)
+    {
+        auto values = obj.tupleof;
+        foreach(value; values)
+        {
+            file.write(GetValue(value) ~ aSeparator);
+        }
+        file.write('\n');
+    }
+
+    file.close();
+}
+
 
 Date GetToday()
 {

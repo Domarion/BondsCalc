@@ -102,7 +102,7 @@ unittest
             0,
             0
         );
-        writeln(actual);
+
         assert(approxEqual(actual, 0.087));
     }
 
@@ -115,26 +115,36 @@ unittest
             0,
             0
         );
-        writeln(actual);
+
         assert(approxEqual(actual, 0.087));
     }
 
-    // {
-    //     const auto actual = CalcCommonSimpleYield(
-    //         4,
-    //         0.5,
-    //         1000,
-    //         750,
-    //         0.05 * 0.01,
-    //         0
-    //     );
-    //     writeln(actual);
-    //     writeln(CalcSimpleYieldPerYear(actual, GetToday(), Date(2023,5,4)));
+    // Очень маленький купон, низкая цена облигации
+    {
+        const auto actual = CalcCommonSimpleYield(
+            2,
+            1000,
+            750,
+            0.05 * 0.01,
+            0
+        );
 
-    //     assert(approxEqual(actual, 0.087));
-    // }
+        assert(approxEqual(actual, 0.335));
+    }
+
+    // Нет купонов
+    {
+        const auto actual = CalcCommonSimpleYield(
+            0,
+            1000,
+            750,
+            0.05 * 0.01,
+            0
+        );
+
+        assert(approxEqual(actual, 0.333));
+    }
 }
-
 
 
 /// Простая годовая доходность до погашения с учётом налогов и сборов
@@ -143,10 +153,88 @@ double CalcSimpleYieldPerYear(
     const Date aFrom,
     const Date aMaturityDate)
 {
-    const double perYearYield = aCommonSimpleYield / GetDateDiffInYears(aFrom, aMaturityDate);
+    const double dateDiff = GetDateDiffInYears(aFrom, aMaturityDate);
+    if (approxEqual(dateDiff, 0.0))
+    {
+        return 0.0;
+    }
+
+    const double perYearYield = aCommonSimpleYield / dateDiff;
 
     return perYearYield.quantize!floor(0.001);
 }
+
+/// Среднегодовая простая доходность
+unittest
+{
+    // Не общей доходности - нет среднегодовой
+    {
+        const auto today = Date(2021, 7, 16);
+        const auto matDate = Date(2022, 6, 15);
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0,
+            today,
+            matDate
+        );
+
+        assert(approxEqual(actual, 0.0));
+    }
+    // Нет cрока - нет доходности
+    {
+        const auto today = Date(2021, 7, 16);
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0,
+            today,
+            today
+        );
+
+        assert(approxEqual(actual, 0.0));
+    }
+
+    // Нет cрока - нет доходности
+    {
+        const auto today = Date(2021, 7, 16);
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0.1,
+            today,
+            today
+        );
+
+        assert(approxEqual(actual, 0.0));
+    }
+
+    // На сроке в 1 год = общей простой доходности
+    {
+        const auto today = Date(2021, 7, 16);
+        const auto matdate = today + 365.days;
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0.1,
+            today,
+            matdate
+        );
+
+        assert(approxEqual(actual, 0.1));
+    }
+
+    // На сроке в n лет = общей простой доходности/n
+    {
+        const auto today = Date(2021, 7, 16);
+        const auto matdate = today + (365*2).days;
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0.1,
+            today,
+            matdate
+        );
+
+        assert(approxEqual(actual, 0.05));
+    }
+}
+
 
 unittest
 {
