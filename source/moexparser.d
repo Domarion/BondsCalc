@@ -20,6 +20,7 @@ BondExt[] ParseBonds(string aJsonString)
             BondExt bond = GetObj!(BondExt, MoexGetter)(sec.object);
             if (!IsAllowedBoard(bond.BOARDID)
                 || !empty(bond.OFFERDATE)
+                || !empty(bond.BUYBACKDATE)
                 || bond.COUPONPERIOD == 0
                 || empty(bond.MATDATE)
                 || empty(bond.NEXTCOUPON)

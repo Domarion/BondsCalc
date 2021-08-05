@@ -13,25 +13,25 @@ struct BondExt
 
 // Описание полей здесь: https://iss.moex.com/iss/engines/stock/markets/bonds/
     string SECID; // Идентификатор финансового инструмента
+    Date MATDATE = Date.min; // Дата погашения, дд.мм.гг
+    string SECNAME; // Наименование финансового инструмента
+    double ACCRUEDINT = 0.0; // НКД на дату расчетов, в валюте расчетов
+    double COUPONPERCENT = 0.0; // Ставка купона, %
+    double PREVPRICE; // Цена последней сделки пред. дня, % к номиналу
+    double PREVWAPRICE; // Средневзвешенная цена предыдущего дня, % к номиналу
+    double FACEVALUE = 0.0; // Непогашенный долг. Может быть меньше номинала из-за амортизации
+
     string BOARDID; // Идентификатор режима торгов
     string ISIN; // Какой-то код
-    double COUPONPERCENT = 0.0; // Ставка купона, %
-    double ACCRUEDINT = 0.0; // НКД на дату расчетов, в валюте расчетов
-    Date MATDATE = Date.min; // Дата погашения, дд.мм.гг
-
     string SHORTNAME; // Краткое наименование ценной бумаги
-    double PREVWAPRICE; // Средневзвешенная цена предыдущего дня, % к номиналу
     double COUPONVALUE = 0.0; // Сумма купона, в валюте номинала
     Date NEXTCOUPON = Date.min; // Дата окончания купона
-    double PREVPRICE; // Цена последней сделки пред. дня, % к номиналу
     int LOTSIZE; // Размер лота, ц.б.
-    double FACEVALUE = 0.0; // Непогашенный долг. Может быть меньше номинала из-за амортизации
     string BOARDNAME; // Режим торгов
     string STATUS;
     int DECIMALS; // Точность, знаков после запятой
     int COUPONPERIOD; // Длительность купона
     long ISSUESIZE; // Объем выпуска, штук
-    string SECNAME; // Наименование финансового инструмента
     string REMARKS; // Примечание
     double MINSTEP = 0.0; // Мин. шаг цены
     string FACEUNIT; // Валюта номинала
@@ -90,6 +90,7 @@ struct SecurityDesc
     string ISIN;
     bool ISQUALIFIEDINVESTORS = false; // Бумаги для квалифицированных инвесторов
     bool EARLYREPAYMENT = false; // Возможен досрочный выкуп
+    long DAYSTOREDEMPTION; // Дней до погашения
 }
 
 bool IsRub(const string aCurrency)
@@ -117,24 +118,21 @@ bool IsValidPrice(const double aPrice)
 }
 
 /// Получение актуальной цены облигации
-/// Решил, что сначала нужно брать VWAP цену. Если её нет брать максимальную из предыдущей цены и номинала, иначе брать номинал.
+/// Решил, что сначала нужно брать VWAP цену. Если её нет брать предыдущую цену.
 double GetBondActualPrice(const BondExt aBond)
 {
     if (IsValidPrice(aBond.PREVWAPRICE))
     {
-        const double prevVwapPriceAbsolute = quantize!ceil(aBond.FACEVALUE * aBond.PREVWAPRICE / 100, aBond.MINSTEP);
-
-        return prevVwapPriceAbsolute;
+        return quantize!ceil(aBond.FACEVALUE * aBond.PREVWAPRICE / 100, aBond.MINSTEP);
     }
 
     if (IsValidPrice(aBond.PREVPRICE))
     {
         // Предыдущая цена задаётся в процентах от номинала, поэтому делю на 100
-        const double prevPriceAbsolute = quantize!ceil(aBond.FACEVALUE * aBond.PREVPRICE / 100, aBond.MINSTEP);
-        return fmax(aBond.FACEVALUE, prevPriceAbsolute);
+        return quantize!ceil(aBond.FACEVALUE * aBond.PREVPRICE / 100, aBond.MINSTEP);
     }
 
-    return aBond.FACEVALUE;
+    return double.nan;
 }
 
 bool IsEmptyDate(const string aDate)

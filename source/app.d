@@ -39,19 +39,23 @@ BondsGroups FilterBondsByGroups(const BondExt[] aBonds, const double aDepositRat
     const long year = 365;
     const long years = year * aYearsCount;
     const double moreThanDepositRate = 0.02;
-    const auto today = cast(Date)Clock.currTime();
+    const auto today = GetToday();
 
     foreach (const bond; aBonds)
     {
         const double bondActualPrice = GetBondActualPrice(bond);
+
+        if (isNaN(bondActualPrice))
+        {
+            continue;
+        }
 
         BondExt ext = bond;
         ext.HasAmortization = (ext.LOTVALUE != ext.FACEVALUE);        
 
         const auto couponCount = GetCouponCount(bond.MATDATE, bond.COUPONPERIOD, today);
         const auto commonSimpleYieldToMaturity = CalcCommonSimpleYield(
-            couponCount,
-            ext.COUPONVALUE,
+            couponCount * ext.COUPONVALUE,
             ext.FACEVALUE,
             bondActualPrice,
             aBrokerTransactionFee,
@@ -239,11 +243,9 @@ void PrintByLevels(const BondExt[] aBonds, const string aFilePrefix)
     SortBonds(level2);
     SortBonds(level3);
 
-
     WriteToCsv!BondExt(firstPart ~ "-level1.csv", level1);
     WriteToCsv!BondExt(firstPart ~ "-level2.csv", level2);
     WriteToCsv!BondExt(firstPart ~ "-level3.csv", level3);
-
 
     PrintBondsExtToFile(level1, firstPart ~ "-level1.txt");
     PrintBondsExtToFile(level2, firstPart ~ "-level2.txt");
@@ -533,6 +535,12 @@ void ProcessPortfolio(
     Deal[] processedDeals;
     const auto today = GetToday();
 
+    Summary summary;
+    foreach (ref double byLevel; summary.SpentByLevels)
+    {
+        byLevel = 0.0;
+    }
+
     foreach (const deal; aDeals)
     {
         Deal processedDeal = deal;
@@ -558,16 +566,14 @@ void ProcessPortfolio(
                 continue;
             }
 
-            processedDeal.FaceValuePaid = bond.FACEVALUE - info.oldFaceValue;
+            processedDeal.FaceValuePaid = info.oldFaceValue - bond.FACEVALUE;
 
             const auto couponAmount = info.oldCouponAmount + info.newCouponAmount;
-
-            const double commonSimpleYield = CalcCommonSimpleYield(
+            const auto allInPrice = GetAllInCost(processedDeal.BuyPrice, aBrokerTransactionFee, accruedIntForOne);
+            const auto commonSimpleYield = CalcCommonSimpleYield(
                 couponAmount,
                 info.oldFaceValue,
-                processedDeal.BuyPrice,
-                aBrokerTransactionFee,
-                accruedIntForOne);
+                allInPrice);
 
             processedDeal.CommonSimpleYieldToMaturity = 100 * commonSimpleYield;
 
@@ -575,7 +581,7 @@ void ProcessPortfolio(
                 commonSimpleYield,
                 processedDeal.BuyDate,
                 bond.MATDATE);
-            
+
             // объем выплаченных купонов
             if ( processedDeal.CouponPaidCount > 0)
             {
@@ -586,8 +592,27 @@ void ProcessPortfolio(
             processedDeal.YieldIfSellToday = GetYieldIfSellToday(processedDeal, bond);
 
             processedDeals ~= processedDeal;
+
+            const auto spent = allInPrice * processedDeal.Quantity;
+            summary.Spent += spent;
+            summary.ReceivedCouponAmount += processedDeal.CouponValueInQty;
+            summary.ReceivedNominal += processedDeal.FaceValuePaid * processedDeal.Quantity;
+            
+            summary.SpentByLevels[bond.LISTLEVEL - 1] += spent;
         }
     }
+
+    summary.Received = summary.ReceivedNominal + summary.ReceivedCouponAmount;
+    summary.ReceivedToSpent = quantize!floor(summary.Received / summary.Spent * 100, 0.01);
+
+    foreach (ref ByLevel; summary.SpentByLevels)
+    {
+        ByLevel = quantize!floor(ByLevel / summary.Spent * 100, 0.01);
+    }
+
+    File summaryFile = File("../log/portfolioSummary.txt", "w");
+    PrintObj!Summary(summary, summaryFile);
+    summaryFile.close();
 
     WriteToCsv!Deal(aFileName, processedDeals);
 }
@@ -607,7 +632,7 @@ void main()
     const auto deals = ImportPortfolio(portfolioFilePath);
     ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
 
-    const long yearsCount = 2;
+    const long yearsCount = 3;
     const double depositRate = 0.04;
 
     ProcessBonds(client, allBonds, yearsCount, depositRate, brokerTransactionFee);

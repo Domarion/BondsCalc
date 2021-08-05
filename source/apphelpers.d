@@ -7,6 +7,7 @@ public import std.conv : to;
 public import std.datetime;
 import std.math;
 import std.traits : FieldNameTuple;
+import std.string : isNumeric;
 
 bool empty(Date aDate)
 {
@@ -27,7 +28,14 @@ void SimpleGetter(TMember)(string aVal, ref TMember a)
     {
         static if (is(TMember == bool))
         {
-            a = cast(bool) to!int(aVal);
+            if (isNumeric(aVal))
+            {
+                a = cast(bool) to!int(aVal);
+            }
+            else
+            {
+                a = to!bool(aVal);
+            }
         }
         else
         {

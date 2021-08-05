@@ -28,26 +28,31 @@ uint GetCouponCount(
     return cast(uint)daysDiff / cast(uint)aCouponPeriod + 1;
 }
 
+/// Цена за облигацию с учётом брокерской комиссии и НКД
+double GetAllInCost(
+    const double aBondActualPrice,
+    const double aBrokerTransactionFee,
+    const double aAccruedInt)
+{
+    return aBondActualPrice * (1 + aBrokerTransactionFee) + aAccruedInt;
+}
 
 /// Простая общая доходность до погашения с учётом налогов и сборов
 /// Показывает доход без учёта реинвестирования и месячной платы брокеру
 /// Учитывает налог на купоны и комиссию брокера за транзакцию.
 double CalcCommonSimpleYield(
-    const uint aCouponCount,
-    const double aCouponSize,
+    const double aCouponsAmount,
     const double aFaceValue,
-    const double aBondActualPrice,
-    const double aBrokerTransactionFee,
-    const double aAccruedInt)
+    const double aAllInCost)
 {
-    const double couponAmount = aCouponSize * aCouponCount;
-
-    return CalcCommonSimpleYield(
-        couponAmount,
-        aFaceValue,
-        aBondActualPrice,
-        aBrokerTransactionFee,
-        aAccruedInt);
+    // Коэффициент при налоговой ставке 13%. Перенести в TaxInfo
+    const double afterTax = 0.87;
+    // Сумма купонов за весь срок с учётом налога 13%
+    const double couponAmountWithTax = aCouponsAmount * afterTax;
+    
+    // Доход с учётом разницы полной цены покупки облигации и номинала
+    const double absYield =  couponAmountWithTax + aFaceValue - aAllInCost;
+    return quantize(absYield / aAllInCost, 0.0001);
 }
 
 double CalcCommonSimpleYield(
@@ -57,24 +62,8 @@ double CalcCommonSimpleYield(
     const double aBrokerTransactionFee,
     const double aAccruedInt)
 {
-    // Коэффициент при налоговой ставке 13%. Перенести в TaxInfo
-    const double afterTax = 0.87;
-    const double brokerTaxCoef = 1 + aBrokerTransactionFee;
-
-    // Сумма купонов за весь срок с учётом налога 13%
-    const double couponAmountWithTax = aCouponsAmount * afterTax;
-
-    // Полная цена приобретения облигации
-    const double allInCost = aBondActualPrice * brokerTaxCoef + aAccruedInt;
-    
-    // Доход с учётом разницы полной цены покупки облигации и номинала
-    // writeln(couponAmountWithTax);
-    // writeln(allInCost);
-    // writeln(couponAmountWithTax/allInCost);
-
-    const double absYield =  couponAmountWithTax + aFaceValue - allInCost;
-    // writeln(absYield / allInCost);
-    return quantize(absYield / allInCost, 0.0001);
+    const double allInCost = GetAllInCost(aBondActualPrice, aBrokerTransactionFee, aAccruedInt);
+    return CalcCommonSimpleYield(aCouponsAmount, aFaceValue, allInCost);
 }
 
 unittest
@@ -82,7 +71,6 @@ unittest
     /// CalcCommonSimpleYield
     {
     const auto actual = CalcCommonSimpleYield(
-        1,
         10,
         1000,
         1000,
@@ -95,8 +83,7 @@ unittest
 
     {
         const auto actual = CalcCommonSimpleYield(
-            10,
-            10,
+            100,
             1000,
             1000,
             0,
@@ -108,8 +95,7 @@ unittest
 
     {
         const auto actual = CalcCommonSimpleYield(
-            10,
-            10000,
+            100000,
             1000000,
             1000000,
             0,
@@ -144,8 +130,18 @@ unittest
 
         assert(approxEqual(actual, 0.333));
     }
-}
 
+    {
+        const auto actual = CalcCommonSimpleYield(
+            3*38.39,
+            1000,
+            1003.4,
+            0.05 * 0.01,
+            0.42
+        );
+        assert(approxEqual(actual, 0.0955));
+    }
+}
 
 /// Простая годовая доходность до погашения с учётом налогов и сборов
 double CalcSimpleYieldPerYear(
@@ -231,7 +227,17 @@ unittest
             matdate
         );
 
-        assert(approxEqual(actual, 0.05));
+    }
+
+    {
+        const auto today = Date(2021, 8, 4);
+        const auto matdate = Date(2023,1, 31);
+
+        const auto actual = CalcSimpleYieldPerYear(
+            0.0955,
+            today,
+            matdate);
+        assert(approxEqual(actual, 0.063));
     }
 }
 
