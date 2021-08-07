@@ -6,6 +6,7 @@ import portfolio;
 import bondshelpers;
 import std.typecons : Tuple;
 import std.algorithm;
+import std.container.rbtree;
 
 void PrintBondsExtToFile(const BondExt[] aBonds, string aFileName)
 {
@@ -71,7 +72,7 @@ BondsGroups FilterBondsByGroups(const BondExt[] aBonds, const double aDepositRat
     
         const long days = GetDaysBetweenDates(ext.MATDATE, today);
         if (ext.FACEVALUE > 10000
-            || days < year
+            || (days < year && commonSimpleYieldToMaturity <= aDepositRate + moreThanDepositRate)
             || days > years
             || simpleYieldToMaturityPerYear <= aDepositRate + moreThanDepositRate)
         {
@@ -294,6 +295,11 @@ void ProcessBonds(
 
     writeln(format("minDate:%s, maxDate:%s", minDate.toISOExtString(), maxDate.toISOExtString()));
 
+    if (minDate > maxDate)
+    {
+        exit(1);
+    }
+
     auto allAmortsData = TakeAmortizationDataForBond(aClient, "", minDate, maxDate);
 
     AmortData[][string] amortsByISIN;
@@ -360,12 +366,12 @@ double GetYieldIfSellToday(const Deal aDealInfo, const BondExt aBondInfo)
 {
     // TODO: проверить формулу
     const double brokerTax = 0.05 * 0.01;
-    const double allInCost = aDealInfo.BuyPrice * (1 + brokerTax) * aDealInfo.Quantity + aDealInfo.AccruedIntQty;
+    const double allInCost = aDealInfo.Price * (1 + brokerTax) * aDealInfo.Quantity + aDealInfo.AccruedIntQty;
 
     const double prevPrice = quantize!floor(aBondInfo.FACEVALUE * aBondInfo.PREVWAPRICE / 100, aBondInfo.MINSTEP);
     const double sellPx = prevPrice + aBondInfo.ACCRUEDINT;
 
-    const double sellTax = aDealInfo.BuyPrice >= sellPx ? 1 : 0.87;
+    const double sellTax = aDealInfo.Price >= sellPx ? 1 : 0.87;
 
     const double sellCost = (prevPrice * (1 - brokerTax) + aBondInfo.ACCRUEDINT) * aDealInfo.Quantity * sellTax;
 
@@ -450,7 +456,7 @@ CouponPaymentInfo GetCouponPaymentInfoForAmortsAndCoupons(
         // Назад во времени
         long oldCouponsIndex = 0;
 
-        for (; oldCouponsIndex < aCouponData.length && aCouponData[oldCouponsIndex].coupondate <= aProcessedDeal.BuyDate
+        for (; oldCouponsIndex < aCouponData.length && aCouponData[oldCouponsIndex].coupondate <= aProcessedDeal.DealDate
              ; ++oldCouponsIndex){}
 
         newCouponsIndex = oldCouponsIndex + aProcessedDeal.CouponPaidCount;
@@ -473,13 +479,14 @@ CouponPaymentInfo GetCouponPaymentInfoCommon(
     HttpClient aClient,
     const Deal aProcessedDeal,
     const BondExt aBond,
-    const Date aToday)
+    const Date aToday,
+    const Date aDueDate)
 {
     CouponPaymentInfo info;
 
     if (!aProcessedDeal.HasAmortization)
     {
-        const auto couponCount = GetCouponCount(aBond.MATDATE, aBond.COUPONPERIOD, aProcessedDeal.BuyDate);
+        const auto couponCount = GetCouponCount(aDueDate, aBond.COUPONPERIOD, aProcessedDeal.DealDate);
 
         info.oldFaceValue = aBond.FACEVALUE;
         info.oldCouponAmount = aBond.COUPONVALUE * aProcessedDeal.CouponPaidCount;
@@ -490,7 +497,7 @@ CouponPaymentInfo GetCouponPaymentInfoCommon(
     auto amortsData = TakeAmortizationDataForBond(
         aClient,
         aProcessedDeal.ISIN,
-        aProcessedDeal.BuyDate,
+        aProcessedDeal.DealDate,
         aBond.MATDATE);
 
     if (amortsData.length == 0)
@@ -501,7 +508,7 @@ CouponPaymentInfo GetCouponPaymentInfoCommon(
     auto couponsData = TakeCouponDataForBond(
         aClient,
         aProcessedDeal.ISIN,
-        aProcessedDeal.BuyDate,
+        aProcessedDeal.DealDate,
         aBond.MATDATE);
 
     if (couponsData.length == 0)
@@ -520,9 +527,10 @@ CouponPaymentInfo GetCouponPaymentInfoCommon(
 void ProcessPortfolio(
     HttpClient aClient,
     const string aFileName,
-    const Deal[] aDeals,
+    const DealsByIsin aDeals,
     const BondExt[] aBonds,
-    const double aBrokerTransactionFee)
+    const double aBrokerTransactionFee,
+    const double aBrokerMonthlyTax)
 {
     // Простая обработка портфеля без амортизаций
     BondExt[string] bondsByIsin;
@@ -536,30 +544,61 @@ void ProcessPortfolio(
     const auto today = GetToday();
 
     Summary summary;
-    foreach (ref double byLevel; summary.SpentByLevels)
+    foreach (ref double byLevel; summary.ActiveSpentByLevels)
     {
         byLevel = 0.0;
     }
 
-    foreach (const deal; aDeals)
-    {
-        Deal processedDeal = deal;
+    auto rbt = redBlackTree!Date();
 
-        if (processedDeal.ISIN in bondsByIsin)
+    foreach (const string isin, const dealsByIsin; aDeals)
+    {
+        if (isin !in bondsByIsin)
         {
-            auto bond = bondsByIsin[deal.ISIN];
+            continue;
+        }
+        const auto bond = bondsByIsin[isin];
+
+        double avgPx = 0.0;
+        foreach (const deal; dealsByIsin)
+        {
+            rbt.insert(deal.DealDate);
+            if (deal.Side == Sides.Sell)
+            {
+                const double sellYield = deal.Price + deal.AccruedIntQty / deal.Quantity - avgPx;
+                const double koef = sellYield > 0.01
+                    ? 0.87 * sellYield
+                    : 1;
+                summary.ReceivedFromSell += (avgPx + koef * sellYield) * deal.Quantity - deal.BrokerFee;
+
+                summary.BrokerTransactionTaxTotal += deal.BrokerFee;
+                continue;
+            }
+
+            Deal processedDeal = deal;
+
+            const bool wasSold = !empty(processedDeal.SellDate);
+
+            Date dueDate = wasSold
+                ? processedDeal.SellDate
+                : today;
+
+            Date matDate = wasSold
+                ? processedDeal.SellDate
+                : bond.MATDATE;
+
             const auto accruedIntForOne = processedDeal.AccruedIntQty / processedDeal.Quantity;
 
             processedDeal.MaturityDate = bond.MATDATE;
 
             // число выплаченных купонов
             processedDeal.CouponPaidCount = GetCouponPaidCount(
-                processedDeal.BuyDate,
-                today,
+                processedDeal.DealDate,
+                dueDate,
                 bond.MATDATE,
                 bond.COUPONPERIOD);
 
-            const auto info = GetCouponPaymentInfoCommon(aClient, processedDeal, bond, today);
+            const auto info = GetCouponPaymentInfoCommon(aClient, processedDeal, bond, dueDate, matDate);
 
             if (isNaN(info.oldFaceValue))
             {
@@ -569,7 +608,10 @@ void ProcessPortfolio(
             processedDeal.FaceValuePaid = info.oldFaceValue - bond.FACEVALUE;
 
             const auto couponAmount = info.oldCouponAmount + info.newCouponAmount;
-            const auto allInPrice = GetAllInCost(processedDeal.BuyPrice, aBrokerTransactionFee, accruedIntForOne);
+            const auto allInPrice = GetAllInCost(processedDeal.Price, aBrokerTransactionFee, accruedIntForOne);
+            avgPx += allInPrice;
+            summary.BrokerTransactionTaxTotal += processedDeal.BrokerFee;
+
             const auto commonSimpleYield = CalcCommonSimpleYield(
                 couponAmount,
                 info.oldFaceValue,
@@ -579,7 +621,7 @@ void ProcessPortfolio(
 
             processedDeal.SimpleYieldToMaturityPerYear = 100 * CalcSimpleYieldPerYear(
                 commonSimpleYield,
-                processedDeal.BuyDate,
+                processedDeal.DealDate,
                 bond.MATDATE);
 
             // объем выплаченных купонов
@@ -589,7 +631,10 @@ void ProcessPortfolio(
                 processedDeal.CouponValueInQty = couponQty * 0.87 - processedDeal.AccruedIntQty;
             }
 
-            processedDeal.YieldIfSellToday = GetYieldIfSellToday(processedDeal, bond);
+            if (!wasSold)
+            {
+                processedDeal.YieldIfSellToday = GetYieldIfSellToday(processedDeal, bond);
+            }
 
             processedDeals ~= processedDeal;
 
@@ -598,14 +643,32 @@ void ProcessPortfolio(
             summary.ReceivedCouponAmount += processedDeal.CouponValueInQty;
             summary.ReceivedNominal += processedDeal.FaceValuePaid * processedDeal.Quantity;
             
-            summary.SpentByLevels[bond.LISTLEVEL - 1] += spent;
+            if (!wasSold)
+            {
+                summary.ActiveSpentByLevels[bond.LISTLEVEL - 1] += spent;
+            }
         }
     }
 
-    summary.Received = summary.ReceivedNominal + summary.ReceivedCouponAmount;
+    uint monthsUniq = 0;
+    uint prevMonth = 0;
+    uint prevYear = 0;
+    foreach (const key; rbt)
+    {
+        if (prevMonth != key.month() || prevYear != key.year())
+        {
+            ++monthsUniq;
+            prevMonth = key.month();
+            prevYear = key.year();
+        }
+    }
+
+    summary.BrokerMonthlyPaymentTotal = aBrokerMonthlyTax * monthsUniq;
+    summary.Spent += summary.BrokerMonthlyPaymentTotal;
+    summary.Received = summary.ReceivedNominal + summary.ReceivedCouponAmount + summary.ReceivedFromSell;
     summary.ReceivedToSpent = quantize!floor(summary.Received / summary.Spent * 100, 0.01);
 
-    foreach (ref ByLevel; summary.SpentByLevels)
+    foreach (ref ByLevel; summary.ActiveSpentByLevels)
     {
         ByLevel = quantize!floor(ByLevel / summary.Spent * 100, 0.01);
     }
@@ -619,25 +682,24 @@ void ProcessPortfolio(
 
 void main()
 {
-    const double brokerTransactionFee = 0.01 * 0.05;
 
     HttpClient client = new HttpClient();
 
     const auto securitiesQuery = "http://iss.moex.com/iss/engines/stock/markets/bonds/securities.json?iss.json=extended&iss.only=securities&iss.meta=on";
     const auto allBonds = QueryBonds(client, securitiesQuery);
 
+    const double brokerTransactionFee = 0.01 * 0.05;
     // Взять и обработать портфель на предмет прошлой доходности и перспектив в зависимости от deals, bonds.
     const string portfolioFilePath = "../Report.csv";
     const string processedPortfolioFilePath = "../log/reports.csv";
     const auto deals = ImportPortfolio(portfolioFilePath);
-    ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee);
+    const double brokerMonthlyTax = 290;
+    ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee, brokerMonthlyTax);
 
-    const long yearsCount = 3;
+    const long yearsCount = 2;
     const double depositRate = 0.04;
-
     ProcessBonds(client, allBonds, yearsCount, depositRate, brokerTransactionFee);
 
     StopEventLoop();
-
     exit(0);
 }

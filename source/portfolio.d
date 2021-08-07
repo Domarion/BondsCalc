@@ -7,16 +7,25 @@ import std.datetime;
 import apphelpers;
 import moexdata : IsEmptyDate;
 
+enum Sides
+{
+    Buy = 0,
+    Sell = 1
+}
+
 struct Deal
 {
+    string SECID;
     string ISIN;
     string Name;
-    Date BuyDate = Date.min;
-    double BuyPrice = 0.0;
+    Sides Side;
+    Date DealDate = Date.min;
+    double Price = 0.0;
     long Quantity;
     double AccruedIntQty = 0.0; // НКД за весь объем
     double BrokerFee = 0.0; // Комиссия брокера в рублях
     bool HasAmortization = false; // Есть ли амортизация
+    Date SellDate = Date.min;
     
     // Группа вычисляемых полей
     Date MaturityDate = Date.min;
@@ -30,27 +39,24 @@ struct Deal
     double FaceValuePaid = 0.0; // Погашенная часть номинала за время владения для одной облигации
 }
 
-// TODO: Нужно получить общее состояние по облигации
-struct PortfolioBond
-{
-    string ISIN;
-    double CounterQtyAll = 0.0; // Уплачено всего за количество облигаций.
-    double PortfolioMoneyPercent = 0.0;
-}
-
 struct Summary
 {
     double Spent = 0.0; // Потрачено денег
+    double BrokerMonthlyPaymentTotal = 0.0; // Всего уплачено брокеру(считаются только ежемесячные платежи)
+    double BrokerTransactionTaxTotal = 0.0; // Транзакционные издержки(неявно учитывается в Spent)
     double ReceivedCouponAmount = 0.0; // Получено денег с купонов
     double ReceivedNominal = 0.0; // Выплачено из тела долга
+    double ReceivedFromSell = 0.0; // Получено денег от продажи
     double Received = 0.0; // Получено денег всего
     @("%") double ReceivedToSpent = 0.0; // Процент полученных денег к потраченным
-    double[3] SpentByLevels; // Количество облигаций по уровням (ListLevel 1-3)
+    double[3] ActiveSpentByLevels; // Количество активных (непогашенных, непроданных) облигаций в портфеле по уровням (ListLevel 1-3)
 }
 
-Deal[] ImportPortfolio(string aFileName)
+alias DealsByIsin = Deal[][string];
+
+DealsByIsin ImportPortfolio(string aFileName)
 {
-    Deal[] deals;
+    DealsByIsin deals;
 
     if (!aFileName.exists)
     {
@@ -62,15 +68,11 @@ Deal[] ImportPortfolio(string aFileName)
     foreach (record; csvReader!(string[string])
             (file.byLine.joiner("\n"), null, ';'))
     {
-        deals ~= GetObj!(Deal, PortfolioGetter)(record);
-    }
+        auto deal = GetObj!(Deal, PortfolioGetter)(record);
+        deals[deal.ISIN] ~= deal;
 
+    }
     file.close();
-
-    foreach (deal; deals)
-    {
-        PrintObj!Deal(deal, stdout);
-    }
 
     return deals;
 }
