@@ -24,8 +24,50 @@ uint GetCouponCount(
     const int aCouponPeriod,
     const Date aToday)
 {
-    auto daysDiff = GetDaysBetweenDates(aMaturityDate, aToday);
-    return cast(uint)daysDiff / cast(uint)aCouponPeriod + 1;
+    const auto daysDiff = cast(uint) GetDaysBetweenDates(aMaturityDate, aToday);
+    const auto couponPeriod = cast(uint)aCouponPeriod;
+    const uint count = daysDiff / couponPeriod;
+    const bool remainder = couponPeriod * count < daysDiff;
+
+    return count + remainder;
+}
+
+unittest
+{
+    ///Расчёт числа купонов
+
+    const auto today = Date(2021, 7, 16);
+    {
+        const auto matDate = Date(2022, 6, 15);
+        const int couponPeriod = 910;
+
+        const auto actual = GetCouponCount(matDate, couponPeriod, today);
+        assert(actual == 1);
+    }
+
+    {
+        const auto matDate = Date(2021, 8, 17);
+        const int couponPeriod = 31;
+
+        const auto actual = GetCouponCount(matDate, couponPeriod, today);
+        assert(actual == 2);
+    }
+    {
+        const auto today1 = Date(2021, 8, 10);
+        const auto matDate = Date(2022, 8, 11);
+        const int couponPeriod = 183;
+
+        const auto actual = GetCouponCount(matDate, couponPeriod, today1);
+        assert(actual == 2);
+    }
+
+    {
+        const auto matDate = today;
+        const int couponPeriod = 183;
+
+        const auto actual = GetCouponCount(matDate, couponPeriod, today);
+        assert(actual == 0);
+    }
 }
 
 /// Цена за облигацию с учётом брокерской комиссии и НКД
@@ -52,7 +94,7 @@ double CalcCommonSimpleYield(
     
     // Доход с учётом разницы полной цены покупки облигации и номинала
     const double absYield =  couponAmountWithTax + aFaceValue - aAllInCost;
-    return quantize(absYield / aAllInCost, 0.0001);
+    return quantize(absYield / aAllInCost, 0.00001);
 }
 
 double CalcCommonSimpleYield(
@@ -140,6 +182,16 @@ unittest
             0.42
         );
         assert(approxEqual(actual, 0.0955));
+    }
+    {
+        const auto actual = CalcCommonSimpleYield(
+            3*39.61,
+            1000,
+            1007.7,
+            0.05 * 0.01,
+            0.0
+        );
+        assert(approxEqual(actual, 0.0944));
     }
 }
 
@@ -238,29 +290,6 @@ unittest
             today,
             matdate);
         assert(approxEqual(actual, 0.063));
-    }
-}
-
-
-unittest
-{
-    ///Расчёт числа купонов
-
-    auto today = Date(2021, 7, 16);
-    {
-        const auto matDate = Date(2022, 6, 15);
-        const int couponPeriod = 910;
-
-        const auto actual = GetCouponCount(matDate, couponPeriod, today);
-        assert(actual == 1);
-    }
-
-    {
-        const auto matDate = Date(2021, 8, 17);
-        const int couponPeriod = 31;
-
-        const auto actual = GetCouponCount(matDate, couponPeriod, today);
-        assert(actual == 2);
     }
 }
 

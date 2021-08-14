@@ -21,7 +21,7 @@ struct Deal
     Sides Side;
     Date DealDate = Date.min;
     double Price = 0.0;
-    long Quantity;
+    long Quantity; // Число бумаг.
     double AccruedIntQty = 0.0; // НКД за весь объем
     double BrokerFee = 0.0; // Комиссия брокера в рублях
     bool HasAmortization = false; // Есть ли амортизация
@@ -39,8 +39,22 @@ struct Deal
     double FaceValuePaid = 0.0; // Погашенная часть номинала за время владения для одной облигации
 }
 
+/// Информация об облигации на дату запроса.
+struct BondInfo
+{
+    string Isin;
+    string Name;
+    int ListLevel = 0; // Уровень листинга на бирже(меньше - надежней)
+    Date MaturityDate = Date.min;
+    long Quantity = 0; // Общее число бумаг на дату запроса
+    double VwapPrice = 0.0; // Средневзвешенная цена (расчёт по all-in price)
+    @("%") double PortfolioPercentage = 0.0; // Процент от общего объема портфеля
+    @("%") double LevelPercentage = 0.0; // Процент от облигаций этого уровня
+}
+
 struct Summary
 {
+    double SpentWithoutBrokerMontlyFee = 0.0; // Потрачено денег без брокерской месячной комиссии
     double Spent = 0.0; // Потрачено денег
     double BrokerMonthlyPaymentTotal = 0.0; // Всего уплачено брокеру(считаются только ежемесячные платежи)
     double BrokerTransactionTaxTotal = 0.0; // Транзакционные издержки(неявно учитывается в Spent)
@@ -49,7 +63,7 @@ struct Summary
     double ReceivedFromSell = 0.0; // Получено денег от продажи
     double Received = 0.0; // Получено денег всего
     @("%") double ReceivedToSpent = 0.0; // Процент полученных денег к потраченным
-    double[3] ActiveSpentByLevels; // Количество активных (непогашенных, непроданных) облигаций в портфеле по уровням (ListLevel 1-3)
+    double[3] ActiveSpentByLevels; // Процент активных (непогашенных, непроданных) облигаций в портфеле по уровням (ListLevel 1-3)
 }
 
 alias DealsByIsin = Deal[][string];

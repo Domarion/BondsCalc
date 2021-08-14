@@ -72,9 +72,9 @@ BondsGroups FilterBondsByGroups(const BondExt[] aBonds, const double aDepositRat
     
         const long days = GetDaysBetweenDates(ext.MATDATE, today);
         if (ext.FACEVALUE > 10000
-            || (days < year && commonSimpleYieldToMaturity <= aDepositRate + moreThanDepositRate)
             || days > years
-            || simpleYieldToMaturityPerYear <= aDepositRate + moreThanDepositRate)
+            || simpleYieldToMaturityPerYear <= aDepositRate + moreThanDepositRate
+            || (days < year && commonSimpleYieldToMaturity < aDepositRate))
         {
             uninteresting ~= ext;
         }
@@ -551,6 +551,8 @@ void ProcessPortfolio(
 
     auto rbt = redBlackTree!Date();
 
+    BondInfo[] bondsInfo;
+
     foreach (const string isin, const dealsByIsin; aDeals)
     {
         if (isin !in bondsByIsin)
@@ -560,6 +562,13 @@ void ProcessPortfolio(
         const auto bond = bondsByIsin[isin];
 
         double avgPx = 0.0;
+        BondInfo bondInfo;
+
+        bondInfo.Isin = isin;
+        bondInfo.MaturityDate = bond.MATDATE;
+        bondInfo.ListLevel = bond.LISTLEVEL;
+        bondInfo.Name = bond.SECNAME;
+
         foreach (const deal; dealsByIsin)
         {
             rbt.insert(deal.DealDate);
@@ -611,7 +620,6 @@ void ProcessPortfolio(
             const auto allInPrice = GetAllInCost(processedDeal.Price, aBrokerTransactionFee, accruedIntForOne);
             avgPx += allInPrice;
             summary.BrokerTransactionTaxTotal += processedDeal.BrokerFee;
-
             const auto commonSimpleYield = CalcCommonSimpleYield(
                 couponAmount,
                 info.oldFaceValue,
@@ -631,15 +639,18 @@ void ProcessPortfolio(
                 processedDeal.CouponValueInQty = couponQty * 0.87 - processedDeal.AccruedIntQty;
             }
 
+            const auto spent = allInPrice * processedDeal.Quantity;
+
             if (!wasSold)
             {
                 processedDeal.YieldIfSellToday = GetYieldIfSellToday(processedDeal, bond);
+                bondInfo.Quantity +=  processedDeal.Quantity;
+                bondInfo.VwapPrice += spent;
             }
 
             processedDeals ~= processedDeal;
 
-            const auto spent = allInPrice * processedDeal.Quantity;
-            summary.Spent += spent;
+            summary.SpentWithoutBrokerMontlyFee += spent;
             summary.ReceivedCouponAmount += processedDeal.CouponValueInQty;
             summary.ReceivedNominal += processedDeal.FaceValuePaid * processedDeal.Quantity;
             
@@ -647,6 +658,15 @@ void ProcessPortfolio(
             {
                 summary.ActiveSpentByLevels[bond.LISTLEVEL - 1] += spent;
             }
+        }
+        if (!isClose(bondInfo.Quantity, 0.0))
+        {
+            bondInfo.VwapPrice /= bondInfo.Quantity;
+        }
+
+        if (bondInfo.Quantity > 0)
+        {
+            bondsInfo ~= bondInfo;
         }
     }
 
@@ -664,9 +684,18 @@ void ProcessPortfolio(
     }
 
     summary.BrokerMonthlyPaymentTotal = aBrokerMonthlyTax * monthsUniq;
-    summary.Spent += summary.BrokerMonthlyPaymentTotal;
+    summary.Spent = summary.SpentWithoutBrokerMontlyFee + summary.BrokerMonthlyPaymentTotal;
     summary.Received = summary.ReceivedNominal + summary.ReceivedCouponAmount + summary.ReceivedFromSell;
     summary.ReceivedToSpent = quantize!floor(summary.Received / summary.Spent * 100, 0.01);
+
+    foreach (ref bondInfo; bondsInfo)
+    {
+        const auto counterQty = bondInfo.Quantity * bondInfo.VwapPrice;
+        const auto toPercent = 100 * counterQty;
+        const double spentByLevel = summary.ActiveSpentByLevels[bondInfo.ListLevel - 1];
+        bondInfo.PortfolioPercentage = quantize!floor(toPercent / summary.SpentWithoutBrokerMontlyFee, 0.01);
+        bondInfo.LevelPercentage =  quantize!floor(toPercent / spentByLevel, 0.01);
+    }
 
     foreach (ref ByLevel; summary.ActiveSpentByLevels)
     {
@@ -678,6 +707,35 @@ void ProcessPortfolio(
     summaryFile.close();
 
     WriteToCsv!Deal(aFileName, processedDeals);
+
+    auto myComp = (BondInfo x, BondInfo y)
+    {
+        if (x.ListLevel < y.ListLevel)
+        {
+            return true;
+        }
+
+        if (x.ListLevel > y.ListLevel)
+        {
+            return false;
+        }
+
+        if (x.LevelPercentage > y.LevelPercentage)
+        {
+            return true;
+        }
+
+        if (x.LevelPercentage < y.LevelPercentage)
+        {
+            return false;
+        }
+
+        return x.PortfolioPercentage > y.PortfolioPercentage;
+    };
+
+    bondsInfo.sort!(myComp);
+
+    WriteToCsv!BondInfo("../log/bondsSummary.csv", bondsInfo);
 }
 
 void main()
