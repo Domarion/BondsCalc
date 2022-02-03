@@ -755,7 +755,7 @@ void main()
     ProcessPortfolio(client, processedPortfolioFilePath, deals, allBonds, brokerTransactionFee, brokerMonthlyTax);
 
     const long yearsCount = 2;
-    const double depositRate = 0.04;
+    const double depositRate = 0.06;
     ProcessBonds(client, allBonds, yearsCount, depositRate, brokerTransactionFee);
 
     StopEventLoop();
